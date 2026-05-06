@@ -150,7 +150,10 @@ const StepReviewLaunch = ({ onLaunch, onBack, data }) => {
             try {
                 const { data: pubData } = await api.post(
                     `/marketing/campaigns/${campaignId}/publish`,
-                    { platforms: [platform] }
+                    {
+                        platforms: [platform],
+                        tracking: data?.tracking || null,
+                    }
                 );
                 const platformResult = pubData?.results?.[platform] || pubData?.results?.facebook;
                 if (platformResult?.success) {

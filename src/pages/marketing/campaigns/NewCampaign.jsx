@@ -8,6 +8,29 @@ import api from '../../../lib/api';
 import { useToast } from '../../../components/ui/Toast';
 import ConfirmationModal from '../../../components/ui/ConfirmationModal';
 
+const DEFAULT_MARKETING_SETTINGS = {
+    defaults: {
+        campaignObjective: 'Conversions',
+        dailyBudget: 3500,
+        preferredPlatforms: ['meta', 'google'],
+        adFormat: 'image',
+    },
+    tracking: {
+        autoAppendUtm: true,
+        utmSource: 'salespal',
+        utmMedium: 'paid_social',
+        utmCampaignPrefix: 'sp',
+        utmContent: '',
+        utmTerm: '',
+    },
+};
+
+function normalizePreferredPlatforms(input) {
+    if (!Array.isArray(input)) return DEFAULT_MARKETING_SETTINGS.defaults.preferredPlatforms;
+    const clean = input.filter((item) => typeof item === 'string' && item.trim());
+    return clean.length ? clean : DEFAULT_MARKETING_SETTINGS.defaults.preferredPlatforms;
+}
+
 const timeAgo = (dateString) => {
     if (!dateString) return '';
     const date = new Date(dateString);
@@ -86,6 +109,7 @@ const NewCampaign = () => {
     // Draft modal state
     const [hasCheckedDraft, setHasCheckedDraft] = useState(false);
     const [existingDraft, setExistingDraft] = useState(null);
+    const [hasAppliedUserMarketingDefaults, setHasAppliedUserMarketingDefaults] = useState(false);
 
     // Derived state directly from context
     const currentStep = activeDraft?.currentStepIndex || 0;
@@ -160,6 +184,75 @@ const NewCampaign = () => {
             }
         }
     }, [currentStep, activeDraft]);
+
+    useEffect(() => {
+        let mounted = true;
+
+        const applyUserDefaults = async () => {
+            if (!hasCheckedDraft || !activeDraft || hasAppliedUserMarketingDefaults) return;
+
+            try {
+                const settings = await api.get('/users/me/settings');
+                if (!mounted) return;
+                const marketing = settings?.marketing && typeof settings.marketing === 'object' ? settings.marketing : {};
+                const defaults = marketing.defaults && typeof marketing.defaults === 'object'
+                    ? marketing.defaults
+                    : DEFAULT_MARKETING_SETTINGS.defaults;
+                const tracking = marketing.tracking && typeof marketing.tracking === 'object'
+                    ? marketing.tracking
+                    : DEFAULT_MARKETING_SETTINGS.tracking;
+
+                const preferredPlatforms = normalizePreferredPlatforms(defaults.preferredPlatforms);
+                const seededDailyBudget = Number(defaults.dailyBudget || DEFAULT_MARKETING_SETTINGS.defaults.dailyBudget);
+                const seededSplitBase = Math.max(1, preferredPlatforms.length);
+                const seededPerPlatform = preferredPlatforms.reduce((acc, platformId) => {
+                    acc[platformId] = Math.floor(seededDailyBudget / seededSplitBase);
+                    return acc;
+                }, {});
+                const remainder = seededDailyBudget - Object.values(seededPerPlatform).reduce((sum, v) => sum + v, 0);
+                if (preferredPlatforms[0]) seededPerPlatform[preferredPlatforms[0]] += remainder;
+
+                const nextData = {
+                    ...(activeDraft.data || {}),
+                    objective: activeDraft?.data?.objective || defaults.campaignObjective || DEFAULT_MARKETING_SETTINGS.defaults.campaignObjective,
+                    adFormat: activeDraft?.data?.adFormat || defaults.adFormat || DEFAULT_MARKETING_SETTINGS.defaults.adFormat,
+                    budget: {
+                        ...(activeDraft?.data?.budget || {}),
+                        daily: activeDraft?.data?.budget?.daily || seededDailyBudget,
+                        monthly: activeDraft?.data?.budget?.monthly || seededDailyBudget * 30,
+                        perPlatform: activeDraft?.data?.budget?.perPlatform || seededPerPlatform,
+                        platforms: activeDraft?.data?.budget?.platforms?.length
+                            ? activeDraft.data.budget.platforms
+                            : preferredPlatforms,
+                    },
+                    adSettings: {
+                        ...(activeDraft?.data?.adSettings || {}),
+                        platforms: activeDraft?.data?.adSettings?.platforms?.length
+                            ? activeDraft.data.adSettings.platforms
+                            : preferredPlatforms,
+                        selectedAdFormat: activeDraft?.data?.adSettings?.selectedAdFormat
+                            || defaults.adFormat
+                            || DEFAULT_MARKETING_SETTINGS.defaults.adFormat,
+                    },
+                    tracking: {
+                        ...DEFAULT_MARKETING_SETTINGS.tracking,
+                        ...(tracking || {}),
+                    },
+                };
+
+                debouncedUpdateDraftData(nextData);
+            } catch (_) {
+                // Non-blocking: campaign wizard can still proceed without personalized defaults.
+            } finally {
+                if (mounted) setHasAppliedUserMarketingDefaults(true);
+            }
+        };
+
+        applyUserDefaults();
+        return () => {
+            mounted = false;
+        };
+    }, [hasCheckedDraft, activeDraft, hasAppliedUserMarketingDefaults, debouncedUpdateDraftData]);
 
     // Handle scrolling to top on step change
     useEffect(() => {

@@ -34,8 +34,18 @@ export const WHATSAPP_SILENCE_MS = 30_000;
 /**
  * Call is active 9:00–21:59 in the lead’s IANA timezone (9 AM–9 PM local).
  */
-export function isWithinCallActiveWindow(ianaTimeZone) {
+function parseWindowHourMinute(value, fallbackHour) {
+    const m = String(value || '').trim().match(/^([01]?\d|2[0-3]):([0-5]\d)$/);
+    if (!m) return { hh: fallbackHour, mm: 0 };
+    return { hh: Number(m[1]), mm: Number(m[2]) };
+}
+
+export function isWithinCallActiveWindow(ianaTimeZone, windowStart = '09:00', windowEnd = '21:00') {
     const tz = ianaTimeZone || 'Asia/Kolkata';
+    const { hh: startH, mm: startM } = parseWindowHourMinute(windowStart, 9);
+    const { hh: endH, mm: endM } = parseWindowHourMinute(windowEnd, 21);
+    const startTotal = startH * 60 + startM;
+    const endTotal = endH * 60 + endM;
     try {
         const parts = new Intl.DateTimeFormat('en-GB', {
             timeZone: tz,
@@ -44,14 +54,21 @@ export function isWithinCallActiveWindow(ianaTimeZone) {
             hour12: false,
         }).formatToParts(new Date());
         const hour = parseInt(parts.find((p) => p.type === 'hour')?.value ?? '12', 10);
-        return hour >= 9 && hour <= 21;
+        const minute = parseInt(parts.find((p) => p.type === 'minute')?.value ?? '0', 10);
+        const nowTotal = hour * 60 + minute;
+        if (startTotal < endTotal) return nowTotal >= startTotal && nowTotal < endTotal;
+        if (startTotal > endTotal) return nowTotal >= startTotal || nowTotal < endTotal;
+        return true;
     } catch {
-        const h = new Date().getHours();
-        return h >= 9 && h <= 21;
+        const d = new Date();
+        const nowTotal = d.getHours() * 60 + d.getMinutes();
+        if (startTotal < endTotal) return nowTotal >= startTotal && nowTotal < endTotal;
+        if (startTotal > endTotal) return nowTotal >= startTotal || nowTotal < endTotal;
+        return true;
     }
 }
 
-export function callWindowLabel(ianaTimeZone) {
+export function callWindowLabel(ianaTimeZone, windowStart = '09:00', windowEnd = '21:00') {
     const tz = ianaTimeZone || 'Asia/Kolkata';
-    return `Calls 9:00 AM – 9:00 PM (${tz}). WhatsApp 24/7.`;
+    return `Calls ${windowStart} – ${windowEnd} (${tz}). WhatsApp 24/7.`;
 }

@@ -101,6 +101,44 @@ const savePrefs = (p) => {
     try { localStorage.setItem(PREFS_STORAGE_KEY, JSON.stringify(p)); } catch { /**/ }
 };
 
+function mapBackendNotificationSettingsToPrefs(raw = {}) {
+    const input = raw && typeof raw === 'object' ? raw : {};
+    const mapped = {
+        channels: {},
+        categories: {},
+        frequency: {},
+    };
+
+    if (input.channels && typeof input.channels === 'object') {
+        if (typeof input.channels.in_app === 'boolean') mapped.channels.in_app = input.channels.in_app;
+        if (typeof input.channels.sms === 'boolean') mapped.channels.sms = input.channels.sms;
+        if (typeof input.channels.whatsapp === 'boolean') mapped.channels.whatsapp = input.channels.whatsapp;
+        if (typeof input.channels.rcs === 'boolean') mapped.channels.rcs = input.channels.rcs;
+        if (typeof input.channels.bulk === 'boolean') mapped.channels.bulk = input.channels.bulk;
+    }
+
+    if (input.categories && typeof input.categories === 'object') {
+        // UI tab uses plural keys; context uses canonical singular keys.
+        if (typeof input.categories.campaigns === 'boolean') mapped.categories.campaign = { enabled: input.categories.campaigns };
+        if (typeof input.categories.billing === 'boolean') mapped.categories.billing = { enabled: input.categories.billing };
+        if (typeof input.categories.system === 'boolean') mapped.categories.system = { enabled: input.categories.system };
+        if (typeof input.categories.leads === 'boolean') mapped.categories.support = { enabled: input.categories.leads };
+    }
+
+    if (typeof input.deliveryMode === 'string') {
+        mapped.frequency.batch_normal = input.deliveryMode === 'daily';
+    }
+    if (input.quietHours && typeof input.quietHours === 'object') {
+        if (typeof input.quietHours.start === 'string') mapped.frequency.quiet_start = input.quietHours.start;
+        if (typeof input.quietHours.end === 'string') mapped.frequency.quiet_end = input.quietHours.end;
+        if (typeof input.quietHours.allowCritical === 'boolean') {
+            mapped.frequency.quiet_hours_enabled = input.quietHours.allowCritical;
+        }
+    }
+
+    return mapped;
+}
+
 function deepMerge(defaults, override) {
     const result = { ...defaults };
     for (const key of Object.keys(override)) {
@@ -187,6 +225,32 @@ export const NotificationProvider = ({ children }) => {
 
     useEffect(() => { saveNotifications(notifications); }, [notifications]);
     useEffect(() => { savePrefs(prefs); }, [prefs]);
+
+    // Hydrate preferences from backend user settings so context and settings pages share one source.
+    useEffect(() => {
+        let mounted = true;
+
+        const loadBackendPrefs = async () => {
+            if (!isAuthenticated) return;
+            try {
+                const settings = await api.get('/users/me/settings');
+                if (!mounted) return;
+                const rawNotifications = settings?.notifications && typeof settings.notifications === 'object'
+                    ? settings.notifications
+                    : null;
+                if (!rawNotifications) return;
+                const mapped = mapBackendNotificationSettingsToPrefs(rawNotifications);
+                setPrefs(prev => deepMerge(prev, mapped));
+            } catch (_) {
+                // Non-fatal: keep local prefs fallback.
+            }
+        };
+
+        loadBackendPrefs();
+        return () => {
+            mounted = false;
+        };
+    }, [isAuthenticated]);
 
     // ── Sound on new notification ─────────────────────────────────────────
     const latestNotifId = notifications[0]?.id ?? null;

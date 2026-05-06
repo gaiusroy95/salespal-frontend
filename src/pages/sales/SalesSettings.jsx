@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
     PhoneCall, MessageSquare, Zap, Clock, Database, Bell, BrainCircuit,
     ChevronDown, ChevronUp, Save, RotateCcw, Info, Check
 } from 'lucide-react';
 import { useToast } from '../../components/ui/Toast';
+import api from '../../lib/api';
 
 /* ─── Toggle (identical to NotificationsTab) ─────────────────── */
 const Toggle = ({ checked, onChange, disabled = false, size = 'md' }) => {
@@ -77,6 +78,34 @@ const StyledInput = ({ type = 'text', value, onChange, placeholder, className = 
         className={`text-sm border border-gray-200 bg-gray-50 rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors ${className}`} />
 );
 
+const DEFAULT_SALES_SETTINGS = {
+    callStart: '09:00',
+    callEnd: '21:00',
+    aiAnswering: true,
+    missedCallback: true,
+    callbackDelay: '5',
+    maxAttempts: '3',
+    retryInterval: '60',
+    callRecording: true,
+    voicemailDetect: true,
+    waEnabled: true,
+    wa24x7: true,
+    waBrochure: true,
+    waPricing: false,
+    waMeetingLink: true,
+    waReplyDelay: 'Instant',
+    waFollowUpDelay: '24 Hours',
+    hotMin: 80,
+    warmMin: 50,
+    fuEnabled: true,
+    fuMaxPerLead: '7',
+    stopAfterConv: true,
+    pauseOnMeeting: true,
+    aiLang: 'English',
+    aiTone: 'Professional',
+    aiGreeting: 'Hi {name}, this is an AI assistant calling on behalf of {company}. I understand you were interested in {project}. Is this a good time to talk?',
+};
+
 /* ─── Scoring factor row ──────────────────────────────────────── */
 const ScoreFactor = ({ label, value, color }) => (
     <div className="flex items-center justify-between p-3 rounded-lg border border-gray-100 bg-white hover:border-gray-200 transition-all">
@@ -102,9 +131,11 @@ const SequenceStep = ({ day, action, icon: Icon, color }) => (
 const SalesSettings = () => {
     const { showToast } = useToast();
     const [openSection, setOpenSection] = useState('calling');
+    const [loadingSettings, setLoadingSettings] = useState(true);
+    const [savingSettings, setSavingSettings] = useState(false);
 
     const toggle = (id) => setOpenSection(prev => prev === id ? null : id);
-    const save = (msg = 'Settings saved') =>
+    const saveToast = (msg = 'Settings saved') =>
         showToast({ title: msg, description: 'Preferences updated successfully.', variant: 'success', duration: 2500 });
 
     /* ── AI Calling ── */
@@ -181,6 +212,109 @@ const SalesSettings = () => {
         { key: 'sms', label: 'SMS' },
         { key: 'wa', label: 'WhatsApp' },
     ];
+
+    const applySalesSettings = (sales = {}) => {
+        const next = { ...DEFAULT_SALES_SETTINGS, ...(sales && typeof sales === 'object' ? sales : {}) };
+        setCallStart(String(next.callStart || DEFAULT_SALES_SETTINGS.callStart));
+        setCallEnd(String(next.callEnd || DEFAULT_SALES_SETTINGS.callEnd));
+        setAiAnswering(Boolean(next.aiAnswering));
+        setMissedCallback(Boolean(next.missedCallback));
+        setCallbackDelay(String(next.callbackDelay || DEFAULT_SALES_SETTINGS.callbackDelay));
+        setMaxAttempts(String(next.maxAttempts || DEFAULT_SALES_SETTINGS.maxAttempts));
+        setRetryInterval(String(next.retryInterval || DEFAULT_SALES_SETTINGS.retryInterval));
+        setCallRecording(Boolean(next.callRecording));
+        setVoicemailDetect(Boolean(next.voicemailDetect));
+        setWaEnabled(Boolean(next.waEnabled));
+        setWa24x7(Boolean(next.wa24x7));
+        setWaBrochure(Boolean(next.waBrochure));
+        setWaPricing(Boolean(next.waPricing));
+        setWaMeetingLink(Boolean(next.waMeetingLink));
+        setWaReplyDelay(String(next.waReplyDelay || DEFAULT_SALES_SETTINGS.waReplyDelay));
+        setWaFollowUpDelay(String(next.waFollowUpDelay || DEFAULT_SALES_SETTINGS.waFollowUpDelay));
+        setHotMin(Number(next.hotMin || DEFAULT_SALES_SETTINGS.hotMin));
+        setWarmMin(Number(next.warmMin || DEFAULT_SALES_SETTINGS.warmMin));
+        setFuEnabled(Boolean(next.fuEnabled));
+        setFuMaxPerLead(String(next.fuMaxPerLead || DEFAULT_SALES_SETTINGS.fuMaxPerLead));
+        setStopAfterConv(Boolean(next.stopAfterConv));
+        setPauseOnMeeting(Boolean(next.pauseOnMeeting));
+        setAiLang(String(next.aiLang || DEFAULT_SALES_SETTINGS.aiLang));
+        setAiGreeting(String(next.aiGreeting || DEFAULT_SALES_SETTINGS.aiGreeting));
+        setAiTone(String(next.aiTone || DEFAULT_SALES_SETTINGS.aiTone));
+    };
+
+    useEffect(() => {
+        let mounted = true;
+        const load = async () => {
+            setLoadingSettings(true);
+            try {
+                const settings = await api.get('/users/me/settings');
+                const sales = settings?.sales && typeof settings.sales === 'object' ? settings.sales : {};
+                if (mounted) applySalesSettings(sales);
+            } catch (_) {
+                if (mounted) applySalesSettings(DEFAULT_SALES_SETTINGS);
+            } finally {
+                if (mounted) setLoadingSettings(false);
+            }
+        };
+        load();
+        return () => {
+            mounted = false;
+        };
+    }, []);
+
+    const saveSalesSettings = async () => {
+        setSavingSettings(true);
+        try {
+            const sales = {
+                callStart,
+                callEnd,
+                aiAnswering,
+                missedCallback,
+                callbackDelay,
+                maxAttempts,
+                retryInterval,
+                callRecording,
+                voicemailDetect,
+                waEnabled,
+                wa24x7,
+                waBrochure,
+                waPricing,
+                waMeetingLink,
+                waReplyDelay,
+                waFollowUpDelay,
+                hotMin: Number(hotMin),
+                warmMin: Number(warmMin),
+                fuEnabled,
+                fuMaxPerLead,
+                stopAfterConv,
+                pauseOnMeeting,
+                aiLang,
+                aiGreeting,
+                aiTone,
+            };
+            await api.put('/users/me/settings', { sales });
+            saveToast('Sales settings saved');
+        } catch (err) {
+            showToast({
+                title: 'Failed to save settings',
+                description: err?.message || 'Please try again.',
+                variant: 'error',
+                duration: 3000,
+            });
+        } finally {
+            setSavingSettings(false);
+        }
+    };
+
+    const resetSalesSettings = () => {
+        applySalesSettings(DEFAULT_SALES_SETTINGS);
+        showToast({
+            title: 'Defaults restored',
+            description: 'Click Save Settings to apply defaults.',
+            variant: 'success',
+            duration: 2200,
+        });
+    };
 
     /* ─────────────────────── RENDER ───────────────────────────── */
     return (
@@ -485,12 +619,19 @@ const SalesSettings = () => {
 
             {/* Footer actions */}
             <div className="mt-8 flex items-center justify-between gap-4 flex-wrap">
-                <button className="flex items-center justify-center gap-2 text-sm font-semibold text-gray-500 hover:text-gray-700 border border-gray-200 px-4 py-2 rounded-lg hover:bg-gray-50 transition-colors">
+                <button
+                    onClick={resetSalesSettings}
+                    disabled={loadingSettings || savingSettings}
+                    className="flex items-center justify-center gap-2 text-sm font-semibold text-gray-500 hover:text-gray-700 border border-gray-200 px-4 py-2 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                >
                     <RotateCcw className="w-4 h-4" /> Reset to Defaults
                 </button>
-                <button onClick={() => save('Sales settings saved')}
-                    className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-6 py-2.5 rounded-lg font-bold transition-colors shadow-sm text-sm">
-                    <Save size={16} /> Save Settings
+                <button
+                    onClick={saveSalesSettings}
+                    disabled={loadingSettings || savingSettings}
+                    className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-6 py-2.5 rounded-lg font-bold transition-colors shadow-sm text-sm disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                    <Save size={16} /> {savingSettings ? 'Saving...' : 'Save Settings'}
                 </button>
             </div>
         </div>

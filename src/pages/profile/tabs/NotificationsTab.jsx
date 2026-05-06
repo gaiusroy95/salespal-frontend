@@ -1,9 +1,10 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Bell, Mail, MessageSquare, Smartphone, TrendingUp, Users, CreditCard, ShieldAlert, Clock, Save } from 'lucide-react';
 import Card from '../../../components/ui/Card';
 import Button from '../../../components/ui/Button';
 import { useNotifications } from '../../../context/NotificationContext';
 import { useToast } from '../../../components/ui/Toast';
+import api from '../../../lib/api';
 
 /* ── Toggle (matches Integrations badge sizing) ────────────────────── */
 const Toggle = ({ checked, onChange }) => (
@@ -32,6 +33,8 @@ const SectionHeader = ({ title, description }) => (
 const NotificationsTab = () => {
     const { prefs, updateChannelPref, updateCategoryPref, updateFrequencyPref } = useNotifications();
     const { showToast } = useToast();
+    const [loadingSettings, setLoadingSettings] = useState(true);
+    const [savingSettings, setSavingSettings] = useState(false);
 
     const [settings, setSettings] = useState({
         channels: {
@@ -55,24 +58,90 @@ const NotificationsTab = () => {
         },
     });
 
+    const applyNotificationSettings = (rawSettings = {}) => {
+        const incoming = rawSettings && typeof rawSettings === 'object' ? rawSettings : {};
+        setSettings((prev) => ({
+            ...prev,
+            channels: {
+                ...prev.channels,
+                ...incoming.channels,
+            },
+            categories: {
+                ...prev.categories,
+                ...incoming.categories,
+            },
+            deliveryMode: incoming.deliveryMode || prev.deliveryMode,
+            creditAlert: incoming.creditAlert || prev.creditAlert,
+            quietHours: {
+                ...prev.quietHours,
+                ...(incoming.quietHours || {}),
+            },
+        }));
+    };
+
+    useEffect(() => {
+        let mounted = true;
+        const loadSettings = async () => {
+            setLoadingSettings(true);
+            try {
+                const allSettings = await api.get('/users/me/settings');
+                const notifications = allSettings?.notifications && typeof allSettings.notifications === 'object'
+                    ? allSettings.notifications
+                    : {};
+                if (mounted) applyNotificationSettings(notifications);
+            } catch (_) {
+                // Fall back to context/local defaults silently.
+            } finally {
+                if (mounted) setLoadingSettings(false);
+            }
+        };
+        loadSettings();
+        return () => {
+            mounted = false;
+        };
+    }, []);
+
     const updateChannel = (key) => setSettings(p => ({ ...p, channels: { ...p.channels, [key]: !p.channels[key] } }));
     const updateCategory = (key) => setSettings(p => ({ ...p, categories: { ...p.categories, [key]: !p.categories[key] } }));
     const updateDeliveryMode = (mode) => setSettings(p => ({ ...p, deliveryMode: mode }));
     const updateCreditAlert = (val) => setSettings(p => ({ ...p, creditAlert: val }));
     const updateQuietHours = (key, val) => setSettings(p => ({ ...p, quietHours: { ...p.quietHours, [key]: val } }));
 
-    const handleSave = () => {
-        updateChannelPref('in_app', settings.channels.in_app);
-        updateChannelPref('sms', settings.channels.sms);
-        updateChannelPref('whatsapp', settings.channels.whatsapp);
-        updateCategoryPref('campaign', settings.categories.campaigns);
-        updateCategoryPref('billing', settings.categories.billing);
-        updateCategoryPref('system', settings.categories.system);
-        updateFrequencyPref('batch_normal', settings.deliveryMode === 'daily');
-        updateFrequencyPref('quiet_start', settings.quietHours.start);
-        updateFrequencyPref('quiet_end', settings.quietHours.end);
-        updateFrequencyPref('quiet_hours_enabled', settings.quietHours.allowCritical);
-        showToast({ title: 'Settings saved', description: 'Your notification preferences have been updated.', variant: 'success', duration: 3000 });
+    const handleSave = async () => {
+        setSavingSettings(true);
+        try {
+            updateChannelPref('in_app', settings.channels.in_app);
+            updateChannelPref('sms', settings.channels.sms);
+            updateChannelPref('whatsapp', settings.channels.whatsapp);
+            updateCategoryPref('campaign', settings.categories.campaigns);
+            updateCategoryPref('billing', settings.categories.billing);
+            updateCategoryPref('system', settings.categories.system);
+            updateFrequencyPref('batch_normal', settings.deliveryMode === 'daily');
+            updateFrequencyPref('quiet_start', settings.quietHours.start);
+            updateFrequencyPref('quiet_end', settings.quietHours.end);
+            updateFrequencyPref('quiet_hours_enabled', settings.quietHours.allowCritical);
+
+            await api.put('/users/me/settings', {
+                notifications: {
+                    channels: settings.channels,
+                    categories: settings.categories,
+                    deliveryMode: settings.deliveryMode,
+                    creditAlert: settings.creditAlert,
+                    quietHours: settings.quietHours,
+                },
+            });
+
+            showToast({ title: 'Settings saved', description: 'Your notification preferences have been updated.', variant: 'success', duration: 3000 });
+        } catch (err) {
+            showToast({
+                title: 'Failed to save settings',
+                description: err?.message || 'Please try again.',
+                variant: 'error',
+                duration: 3000,
+            });
+        } finally {
+            setSavingSettings(false);
+        }
     };
 
     /* ── Config arrays ─────────────────────────────────────────────────── */
@@ -223,9 +292,9 @@ const NotificationsTab = () => {
 
             {/* ── Save Button ────────────────────────────────────────────── */}
             <div className="flex justify-end pt-2">
-                <Button onClick={handleSave} className="flex items-center gap-2">
+                <Button onClick={handleSave} disabled={loadingSettings || savingSettings} className="flex items-center gap-2">
                     <Save className="w-4 h-4" />
-                    Save Changes
+                    {savingSettings ? 'Saving...' : 'Save Changes'}
                 </Button>
             </div>
         </div>

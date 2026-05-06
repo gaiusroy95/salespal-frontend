@@ -392,6 +392,7 @@ const SalesLeadWorkspace = () => {
     const [voiceProjectId, setVoiceProjectId] = useState('');
     const [voiceAgentName, setVoiceAgentName] = useState('SalesPal AI');
     const [browserVoices, setBrowserVoices] = useState([]);
+    const [salesCallWindow, setSalesCallWindow] = useState({ start: '09:00', end: '21:00' });
 
     useEffect(() => {
         if (typeof window === 'undefined' || !window.speechSynthesis) return undefined;
@@ -408,6 +409,25 @@ const SalesLeadWorkspace = () => {
             if (window.speechSynthesis.onvoiceschanged === load) {
                 window.speechSynthesis.onvoiceschanged = null;
             }
+        };
+    }, []);
+
+    useEffect(() => {
+        let mounted = true;
+        const loadSalesSettings = async () => {
+            try {
+                const settings = await api.get('/users/me/settings');
+                const sales = settings?.sales && typeof settings.sales === 'object' ? settings.sales : {};
+                const start = String(sales.callStart || '09:00').trim();
+                const end = String(sales.callEnd || '21:00').trim();
+                if (mounted) setSalesCallWindow({ start, end });
+            } catch (_) {
+                if (mounted) setSalesCallWindow({ start: '09:00', end: '21:00' });
+            }
+        };
+        loadSalesSettings();
+        return () => {
+            mounted = false;
         };
     }, []);
 
@@ -1634,10 +1654,10 @@ const SalesLeadWorkspace = () => {
             });
             return;
         }
-        if (!isWithinCallActiveWindow(lead.timezone)) {
+        if (!isWithinCallActiveWindow(lead.timezone, salesCallWindow.start, salesCallWindow.end)) {
             showToast({
                 title: 'Outside calling hours',
-                description: callWindowLabel(lead.timezone),
+                description: callWindowLabel(lead.timezone, salesCallWindow.start, salesCallWindow.end),
                 variant: 'warning',
             });
             return;
@@ -2061,7 +2081,7 @@ const SalesLeadWorkspace = () => {
     const calls = (lead.communications || []).filter(c => c.type === 'call');
     const waComm = (lead.communications || []).find(c => c.type === 'whatsapp');
     const waHistory = waComm?.history || [];
-    const callAllowedNow = isWithinCallActiveWindow(lead.timezone);
+    const callAllowedNow = isWithinCallActiveWindow(lead.timezone, salesCallWindow.start, salesCallWindow.end);
     const agentNameReady = String(voiceAgentName || '').trim().length >= 2;
     const projectSelectedReady = Boolean(String(voiceProjectId || '').trim());
     const ttsChosenReady = Boolean(String(ttsVoiceUri || '').trim());
@@ -2215,7 +2235,7 @@ const SalesLeadWorkspace = () => {
                                         {!callAllowedNow && !isCallActive && (
                                             <div className="mb-3 rounded-lg bg-amber-500/20 border border-amber-400/40 text-amber-100 text-xs px-3 py-2 text-left leading-snug">
                                                 Calls are only active 9:00 AM – 9:00 PM in the lead&apos;s timezone.{' '}
-                                                {callWindowLabel(lead.timezone)}
+                                                {callWindowLabel(lead.timezone, salesCallWindow.start, salesCallWindow.end)}
                                             </div>
                                         )}
                                         <div className="flex flex-col items-center text-center">
@@ -2225,7 +2245,7 @@ const SalesLeadWorkspace = () => {
                                     </div>
                                     <h3 className="text-2xl font-bold">{lead.name}</h3>
                                     <p className="text-blue-200 text-sm mt-1 font-medium tracking-widest">{lead.phone}</p>
-                                    <p className="text-blue-200/70 text-[10px] mt-1 px-2 max-w-xs">{callWindowLabel(lead.timezone)}</p>
+                                    <p className="text-blue-200/70 text-[10px] mt-1 px-2 max-w-xs">{callWindowLabel(lead.timezone, salesCallWindow.start, salesCallWindow.end)}</p>
                                     {!isCallActive && (
                                         <div className="mt-4 w-full max-w-sm rounded-xl bg-white/10 border border-white/10 p-3 text-left">
                                             <label className="block text-[10px] uppercase tracking-wide text-blue-100/80 mb-1.5">Project Brain</label>
@@ -2478,7 +2498,7 @@ const SalesLeadWorkspace = () => {
                                             isCallActive
                                                 ? 'End call'
                                                 : !callAllowedNow
-                                                  ? callWindowLabel(lead.timezone)
+                                                  ? callWindowLabel(lead.timezone, salesCallWindow.start, salesCallWindow.end)
                                                   : !voiceCallSetupComplete
                                                     ? 'Select project, agent name, and TTS voice above first'
                                                     : 'Start AI call (dials lead when Tata is enabled)'
