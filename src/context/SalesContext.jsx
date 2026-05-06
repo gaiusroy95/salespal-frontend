@@ -335,6 +335,7 @@ export const SalesProvider = ({ children }) => {
 
     const addActionToLead = async (leadId, type, action, detail, additionalData = {}) => {
         let serverRow = null;
+        let persistFailed = false;
         if (isPersistableLeadId(leadId)) {
             try {
                 serverRow = await api.post(
@@ -343,7 +344,13 @@ export const SalesProvider = ({ children }) => {
                 );
             } catch (e) {
                 console.error('Persist lead action failed:', e);
+                persistFailed = true;
             }
+        }
+
+        // For persisted leads, do not show optimistic-only history when backend save failed.
+        if (isPersistableLeadId(leadId) && persistFailed) {
+            return { ok: false, persisted: false };
         }
 
         setLeads((prev) =>
@@ -430,6 +437,13 @@ export const SalesProvider = ({ children }) => {
                 };
             })
         );
+
+        // Rehydrate from server truth so history survives reload and stays canonical.
+        if (isPersistableLeadId(leadId) && serverRow) {
+            await refreshLeadActivities(leadId);
+        }
+
+        return { ok: true, persisted: Boolean(serverRow) };
     };
 
     const assignLead = (leadId, agentName) => {

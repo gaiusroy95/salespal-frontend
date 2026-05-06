@@ -237,9 +237,6 @@ function primeSpeechSynthesisFromUserGesture() {
     }
 }
 
-const CALL_WINDOW_START_HOUR = 9;
-const CALL_WINDOW_END_HOUR = 21; // exclusive
-
 function resolveHourMinute(hour, minute, ampm) {
     let hh = Number(hour || 0);
     const mm = Number(minute || 0);
@@ -296,10 +293,24 @@ function getZonedParts(dateInput, timeZone = 'Asia/Kolkata') {
     }, {});
 }
 
-function isScheduleWithinCallWindow(scheduleAt, timeZone = 'Asia/Kolkata') {
+function parseWindowHourMinute(value, fallbackHour) {
+    const m = String(value || '').trim().match(/^([01]?\d|2[0-3]):([0-5]\d)$/);
+    if (!m) return { hh: fallbackHour, mm: 0 };
+    return { hh: Number(m[1]), mm: Number(m[2]) };
+}
+
+function isScheduleWithinCallWindow(scheduleAt, timeZone = 'Asia/Kolkata', windowStart = '09:00', windowEnd = '21:00') {
     const z = getZonedParts(scheduleAt, timeZone);
     const hh = Number(z.hour || 0);
-    return hh >= CALL_WINDOW_START_HOUR && hh < CALL_WINDOW_END_HOUR;
+    const mm = Number(z.minute || 0);
+    const nowTotal = hh * 60 + mm;
+    const { hh: startH, mm: startM } = parseWindowHourMinute(windowStart, 9);
+    const { hh: endH, mm: endM } = parseWindowHourMinute(windowEnd, 21);
+    const startTotal = startH * 60 + startM;
+    const endTotal = endH * 60 + endM;
+    if (startTotal < endTotal) return nowTotal >= startTotal && nowTotal < endTotal;
+    if (startTotal > endTotal) return nowTotal >= startTotal || nowTotal < endTotal;
+    return true;
 }
 
 function nextCallWindowSuggestion(scheduleAt, timeZone = 'Asia/Kolkata') {
@@ -394,6 +405,12 @@ const SalesLeadWorkspace = () => {
     const [browserVoices, setBrowserVoices] = useState([]);
     const [salesCallWindow, setSalesCallWindow] = useState({ start: '09:00', end: '21:00' });
 
+    // Hydrate persisted lead history on page load / lead switch.
+    useEffect(() => {
+        if (!lead?.id || !isPersistableLeadId(lead.id)) return;
+        refreshLeadActivities(lead.id);
+    }, [lead?.id, refreshLeadActivities]);
+
     useEffect(() => {
         if (typeof window === 'undefined' || !window.speechSynthesis) return undefined;
         const load = () => {
@@ -439,6 +456,8 @@ const SalesLeadWorkspace = () => {
     const sarvamAudioRef = useRef(null);
     /** 'browser' | 'sarvam' — set from POST /ai/voice/session/start response */
     const voicePlaybackProviderRef = useRef('browser');
+    /** True when backend config explicitly requires Sarvam TTS (no browser fallback). */
+    const sarvamTtsRequiredRef = useRef(false);
     /** 'browser' | 'sarvam' — inbound STT via Web Speech API vs Sarvam REST */
     const voiceSttProviderRef = useRef('browser');
     const sarvamSttAbortRef = useRef(false);
@@ -830,11 +849,29 @@ const SalesLeadWorkspace = () => {
                     const b64 = r?.audio_base64;
                     const mime = r?.mime_type || 'audio/wav';
                     if (!b64) {
+                        if (sarvamTtsRequiredRef.current) {
+                            showToast({
+                                title: 'Sarvam TTS returned empty audio',
+                                description: 'Sarvam-only mode is active, so browser fallback is blocked.',
+                                variant: 'error',
+                            });
+                            done();
+                            return;
+                        }
                         speakText(text, onEnd, { forceBrowser: true });
                         return;
                     }
                     const blob = decodeBase64ToBlob(b64, mime);
                     if (!blob) {
+                        if (sarvamTtsRequiredRef.current) {
+                            showToast({
+                                title: 'Sarvam audio decode failed',
+                                description: 'Sarvam-only mode is active, so browser fallback is blocked.',
+                                variant: 'error',
+                            });
+                            done();
+                            return;
+                        }
                         speakText(text, onEnd, { forceBrowser: true });
                         return;
                     }
@@ -858,16 +895,43 @@ const SalesLeadWorkspace = () => {
                     };
                     audio.onerror = () => {
                         cleanup();
+                        if (sarvamTtsRequiredRef.current) {
+                            showToast({
+                                title: 'Sarvam playback failed',
+                                description: 'Sarvam-only mode is active, so browser fallback is blocked.',
+                                variant: 'error',
+                            });
+                            done();
+                            return;
+                        }
                         speakText(text, onEnd, { forceBrowser: true });
                     };
                     try {
                         await audio.play();
                     } catch (_) {
                         cleanup();
+                        if (sarvamTtsRequiredRef.current) {
+                            showToast({
+                                title: 'Sarvam audio could not play',
+                                description: 'Sarvam-only mode is active, so browser fallback is blocked.',
+                                variant: 'error',
+                            });
+                            done();
+                            return;
+                        }
                         speakText(text, onEnd, { forceBrowser: true });
                     }
                 } catch (e) {
                     console.warn('Sarvam TTS failed:', e?.message || e);
+                    if (sarvamTtsRequiredRef.current) {
+                        showToast({
+                            title: 'Sarvam TTS failed',
+                            description: e?.message || 'Sarvam synthesis failed in Sarvam-only mode.',
+                            variant: 'error',
+                        });
+                        done();
+                        return;
+                    }
                     speakText(text, onEnd, { forceBrowser: true });
                 }
             })();
@@ -1727,6 +1791,17 @@ const SalesLeadWorkspace = () => {
             if (voiceCallDismissedRef.current) {
                 return;
             }
+            sarvamTtsRequiredRef.current = Boolean(response?.voice_tts?.enforce_only);
+            if (sarvamTtsRequiredRef.current && response?.voice_tts?.provider !== 'sarvam') {
+                showToast({
+                    title: 'Sarvam-only mode is enabled',
+                    description:
+                        response?.voice_tts?.unavailable_reason ||
+                        'Sarvam is required but not available. Check SARVAM_API_SUBSCRIPTION_KEY and restart backend.',
+                    variant: 'error',
+                });
+                return;
+            }
             voicePlaybackProviderRef.current =
                 response?.voice_tts?.provider === 'sarvam' ? 'sarvam' : 'browser';
             voiceSttProviderRef.current = response?.voice_stt?.provider === 'sarvam' ? 'sarvam' : 'browser';
@@ -1848,12 +1923,49 @@ const SalesLeadWorkspace = () => {
         try {
             const waCommLocal = (lead.communications || []).find(c => c.type === 'whatsapp');
             const priorHistory = buildWhatsappChatHistory(waCommLocal?.history || []);
-            addActionToLead(lead.id, 'whatsapp', 'WhatsApp sent', text, { sender: 'SalesRep' });
+            const sentResult = await addActionToLead(lead.id, 'whatsapp', 'WhatsApp sent', text, { sender: 'SalesRep' });
+            if (sentResult && sentResult.ok === false) {
+                showToast({
+                    title: 'Message not saved',
+                    description: 'Could not persist this WhatsApp message. Please retry.',
+                    variant: 'error',
+                });
+                return;
+            }
 
             const inferredCallScheduleAt = parseCallRequestScheduleAt(text);
-            if (inferredCallScheduleAt && !isScheduleWithinCallWindow(inferredCallScheduleAt, lead.timezone || 'Asia/Kolkata')) {
+            if (
+                inferredCallScheduleAt &&
+                !isScheduleWithinCallWindow(
+                    inferredCallScheduleAt,
+                    lead.timezone || 'Asia/Kolkata',
+                    salesCallWindow.start,
+                    salesCallWindow.end
+                )
+            ) {
+                showToast({
+                    title: 'Call request saved',
+                    description: `Requested time is outside call window (${salesCallWindow.start}-${salesCallWindow.end}). Shared guidance in timeline.`,
+                    variant: 'warning',
+                });
                 await refreshLeadActivities(lead.id);
                 setWaText('');
+                return;
+            }
+            if (inferredCallScheduleAt) {
+                const tz = lead.timezone || 'Asia/Kolkata';
+                const scheduledLabel = new Date(inferredCallScheduleAt).toLocaleString('en-US', {
+                    timeZone: tz,
+                    month: 'short',
+                    day: 'numeric',
+                    hour: 'numeric',
+                    minute: '2-digit',
+                });
+                const confirmMsg = `Done. I have scheduled your call for ${scheduledLabel} (${tz}).`;
+                await addActionToLead(lead.id, 'whatsapp', 'AI WhatsApp follow-up', confirmMsg, { sender: 'AI' });
+                await refreshLeadActivities(lead.id);
+                setWaText('');
+                scheduleWaNoReplyTimer();
                 return;
             }
 
