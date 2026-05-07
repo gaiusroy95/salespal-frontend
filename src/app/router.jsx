@@ -1,7 +1,6 @@
 import { createBrowserRouter, Navigate, Outlet } from 'react-router-dom';
 import ProjectLayout from '../layouts/ProjectLayout';
 import AdminLayout from '../layouts/AdminLayout';
-import AdminDashboard from '../pages/admin/AdminDashboard';
 import AdminUsers from '../pages/admin/AdminUsers';
 import AdminSubscriptions from '../pages/admin/AdminSubscriptions.tsx';
 import AdminProjects from '../pages/admin/AdminProjects';
@@ -10,7 +9,17 @@ import AdminUserDetail from '../pages/admin/AdminUserDetail';
 import AdminProjectDetail from '../pages/admin/AdminProjectDetail';
 import AdminCampaignDetail from '../pages/admin/AdminCampaignDetail';
 import AdminSubscriptionDetail from '../pages/admin/AdminSubscriptionDetail';
-import AdminAnalytics from '../pages/admin/AdminAnalytics';
+import AdminCommandCenter from '../pages/admin/AdminCommandCenter';
+import AdminSectionBlueprint from '../pages/admin/AdminSectionBlueprint';
+import AdminAiControl from '../pages/admin/AdminAiControl';
+import AdminCommunications from '../pages/admin/AdminCommunications';
+import AdminAlerts from '../pages/admin/AdminAlerts';
+import AdminRolesManagement from '../pages/admin/AdminRolesManagement';
+import AdminPlansPricing from '../pages/admin/AdminPlansPricing';
+import AdminModulesControl from '../pages/admin/AdminModulesControl';
+import AdminBusinessSources from '../pages/admin/AdminBusinessSources';
+import AdminEnterprise from '../pages/admin/AdminEnterprise';
+import AdminSupportOps from '../pages/admin/AdminSupportOps';
 import AdminSettings from '../pages/admin/AdminSettings';
 
 import App from './App';
@@ -215,10 +224,17 @@ export const router = createBrowserRouter([
                 ),
                 children: [
                     { path: '/admin', element: <Navigate to="/admin/dashboard" replace /> },
-                    { path: '/admin/dashboard',     element: <AdminDashboard />     },
+                    { path: '/admin/dashboard',     element: <AdminCommandCenter />     },
                     { path: '/admin/users',          element: <AdminUsers />          },
                     { path: '/admin/users/:id',     element: <AdminUserDetail />     },
                     { path: '/admin/subscriptions',  element: <AdminSubscriptions />  },
+                    { path: '/admin/plans-pricing',  element: <AdminPlansPricing />  },
+                    { path: '/admin/ai-control',  element: <AdminAiControl />  },
+                    { path: '/admin/communications',  element: <AdminCommunications />  },
+                    { path: '/admin/modules',  element: <AdminModulesControl />  },
+                    { path: '/admin/business-sources',  element: <AdminBusinessSources />  },
+                    { path: '/admin/enterprise',  element: <AdminEnterprise />  },
+                    { path: '/admin/admin-roles',  element: <AdminRolesManagement />  },
                     { path: '/admin/subscriptions/:id', element: <AdminSubscriptionDetail /> },
 
                     { path: '/admin/projects',       element: <AdminProjects />       },
@@ -226,7 +242,9 @@ export const router = createBrowserRouter([
                     { path: '/admin/campaigns',      element: <AdminCampaigns />      },
                     { path: '/admin/campaigns/:id', element: <AdminCampaignDetail /> },
 
-                    { path: '/admin/analytics',      element: <AdminAnalytics />      },
+                    { path: '/admin/analytics',      element: <AdminSectionBlueprint sectionKey="analytics" />      },
+                    { path: '/admin/alerts',      element: <AdminAlerts />      },
+                    { path: '/admin/support-ops',      element: <AdminSupportOps />      },
                     { path: '/admin/settings',       element: <AdminSettings />       },
                     { path: '/admin/profile',        element: <ProfilePage />        },
                 ]
@@ -265,6 +283,10 @@ export const router = createBrowserRouter([
                             {
                                 path: "campaigns/:campaignId",
                                 element: <CampaignDetails />
+                            },
+                            {
+                                path: "brain-drive",
+                                element: <BrainDrivePage />
                             },
                             {
                                 path: "projects",

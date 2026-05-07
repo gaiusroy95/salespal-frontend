@@ -78,6 +78,7 @@ const AppLayout = () => {
             children: [
                 { label: 'Dashboard', path: '/marketing', icon: LayoutDashboard, end: true },
                 { label: 'Projects', path: '/marketing/projects', icon: FolderKanban },
+                { label: 'Brain Drive', path: '/marketing/brain-drive', icon: BrainCircuit },
                 { label: 'Social', path: '/marketing/social', icon: Share2 },
                 { label: 'Custom', path: '/marketing/custom', icon: Sparkles }
             ]

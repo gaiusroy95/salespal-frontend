@@ -26,7 +26,7 @@ const AdminSettings = () => {
         <div className="flex flex-col">
             <TopHeader title="Settings" subtitle="Platform-wide system configuration" />
 
-            <div className="p-6">
+            <div className="p-4 md:p-6">
                 {/* Tab Bar */}
                 <div className="bg-white border border-gray-200 rounded-xl shadow-sm mb-6 overflow-hidden">
                     <div className="flex overflow-x-auto scrollbar-hide">

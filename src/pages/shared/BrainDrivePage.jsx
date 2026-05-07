@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import {
     BrainCircuit,
@@ -11,8 +11,9 @@ import {
     Sparkles,
 } from 'lucide-react';
 import { useMarketing } from '../../context/MarketingContext';
-import { useProjects } from '../../hooks/useProjects';
 import { useToast } from '../../components/ui/Toast';
+
+const STORAGE_KEY = 'brainDrive:selectedProjectId';
 
 const SOURCE_LABELS = {
     plain_text: 'Text',
@@ -29,16 +30,24 @@ function formatSourceLabel(type) {
 }
 
 /**
- * Brain Drive — shared project knowledge hub for Sales, Post-Sales, and Support.
- * Uses the global project switcher; ingests into `project_knowledge` for AI replies.
+ * Brain Drive — shared project knowledge hub for Sales, Post-Sales, Support, and Marketing.
+ * Ingests into `project_knowledge` so voice AI and other flows can retrieve project facts.
  */
 const BrainDrivePage = () => {
     const location = useLocation();
     const { showToast } = useToast();
-    const { selectedProjectId, projects } = useMarketing();
-    const { ingestProjectKnowledge, listBrainDrive, refetch } = useProjects();
+    const {
+        selectedProjectId,
+        projects,
+        projectsLoading,
+        selectProject,
+        ingestProjectKnowledge,
+        listBrainDrive,
+        refetchProjects,
+    } = useMarketing();
 
     const moduleName = useMemo(() => {
+        if (location.pathname.startsWith('/marketing')) return 'Marketing';
         if (location.pathname.startsWith('/post-sales')) return 'Post Sales';
         if (location.pathname.startsWith('/support')) return 'Support';
         return 'Sales';
@@ -52,6 +61,7 @@ const BrainDrivePage = () => {
     const [sources, setSources] = useState([]);
     const [loadingSources, setLoadingSources] = useState(false);
     const [submitting, setSubmitting] = useState(false);
+    const hydratedStorageRef = useRef(false);
 
     const [textTitle, setTextTitle] = useState('');
     const [textBody, setTextBody] = useState('');
@@ -60,6 +70,44 @@ const BrainDrivePage = () => {
     const [driveUrl, setDriveUrl] = useState('');
     const [driveNotes, setDriveNotes] = useState('');
     const [pdfFile, setPdfFile] = useState(null);
+
+    const persistProjectChoice = useCallback((projectId) => {
+        try {
+            if (projectId) sessionStorage.setItem(STORAGE_KEY, projectId);
+            else sessionStorage.removeItem(STORAGE_KEY);
+        } catch (_) {
+            /* ignore */
+        }
+    }, []);
+
+    const onProjectSelectChange = useCallback(
+        (e) => {
+            const v = String(e.target.value || '').trim();
+            const next = v || null;
+            selectProject(next);
+            persistProjectChoice(next);
+        },
+        [selectProject, persistProjectChoice]
+    );
+
+    /** Restore last Brain Drive project when landing with "All Projects" still selected */
+    useEffect(() => {
+        if (hydratedStorageRef.current) return;
+        if (selectedProjectId) {
+            hydratedStorageRef.current = true;
+            return;
+        }
+        if (projectsLoading || !projects.length) return;
+        try {
+            const saved = sessionStorage.getItem(STORAGE_KEY);
+            if (saved && projects.some((p) => p.id === saved)) {
+                selectProject(saved);
+            }
+        } catch (_) {
+            /* ignore */
+        }
+        hydratedStorageRef.current = true;
+    }, [projects, projectsLoading, selectedProjectId, selectProject]);
 
     const loadSources = useCallback(async () => {
         if (!selectedProjectId) {
@@ -98,7 +146,7 @@ const BrainDrivePage = () => {
                 description: `Added ${data?.insertedChunks ?? 0} searchable chunk(s) to this project.`,
                 variant: 'success',
             });
-            await refetch();
+            await refetchProjects();
             await loadSources();
         } catch (e) {
             showToast({
@@ -178,8 +226,8 @@ const BrainDrivePage = () => {
                     <h1 className="text-2xl font-bold text-gray-900 tracking-tight">Brain Drive</h1>
                     <p className="text-sm text-gray-600 mt-1 max-w-2xl">
                         Full project documents for your team: text, PDF, public web pages, and Drive links. Content is
-                        chunked and indexed so Sales voice, WhatsApp-style flows, and future Support/Post-Sales assistants
-                        can answer using the same project brain.
+                        chunked and indexed so Sales voice, WhatsApp-style flows, and other assistants pull facts from{' '}
+                        <strong className="text-gray-700">project_knowledge</strong> for the selected listing.
                     </p>
                 </div>
                 <button
@@ -193,17 +241,53 @@ const BrainDrivePage = () => {
                 </button>
             </div>
 
+            <div className="rounded-2xl border border-violet-200 bg-white p-5 shadow-sm space-y-3">
+                <label htmlFor="brain-drive-project" className="block text-sm font-semibold text-gray-900">
+                    Project for this Brain Drive session
+                </label>
+                <p className="text-xs text-gray-500">
+                    Same projects as{' '}
+                    <Link to="/marketing/projects" className="text-violet-700 underline font-medium">
+                        Marketing → Projects
+                    </Link>
+                    . Choosing here updates the header project switcher. Voice AI on calls uses Brain Drive chunks for the
+                    project you attach to leads.
+                </p>
+                {projectsLoading ? (
+                    <p className="text-sm text-gray-500">Loading projects…</p>
+                ) : projects.length === 0 ? (
+                    <div className="rounded-xl border border-amber-100 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                        No projects yet.{' '}
+                        <Link to="/marketing/projects/new" className="font-semibold underline">
+                            Create a project
+                        </Link>{' '}
+                        under Marketing first.
+                    </div>
+                ) : (
+                    <select
+                        id="brain-drive-project"
+                        value={selectedProjectId || ''}
+                        onChange={onProjectSelectChange}
+                        className="w-full max-w-xl rounded-lg border border-gray-200 bg-gray-50/80 px-3 py-2.5 text-sm font-medium text-gray-900 outline-none focus:ring-2 focus:ring-violet-400/70"
+                    >
+                        <option value="">— Select a project —</option>
+                        {projects.map((p) => (
+                            <option key={p.id} value={p.id}>
+                                {p.name || p.id}
+                            </option>
+                        ))}
+                    </select>
+                )}
+            </div>
+
             {!selectedProjectId ? (
                 <div className="rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm text-amber-900 flex gap-3 items-start">
                     <FolderOpen className="shrink-0 mt-0.5" size={18} />
                     <div>
-                        <p className="font-semibold">Select a project</p>
+                        <p className="font-semibold">Select a project above</p>
                         <p className="mt-1 text-amber-800/90">
-                            Use the project switcher in the header, or open{' '}
-                            <Link to="/marketing/projects" className="underline font-medium">
-                                Marketing → Projects
-                            </Link>{' '}
-                            to create one. Brain Drive saves knowledge under the selected project.
+                            Ingest buttons stay disabled until a project is selected. You can also use the{' '}
+                            <strong>project switcher</strong> in the top bar (it no longer redirects away from Brain Drive).
                         </p>
                     </div>
                 </div>

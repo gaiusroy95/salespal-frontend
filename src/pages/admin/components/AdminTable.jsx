@@ -17,7 +17,7 @@ import { Ban } from 'lucide-react';
 const AdminTable = ({ columns, data, actions, emptyMessage = 'No data available', onRowClick }) => {
     return (
         <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="w-full min-w-[760px] text-sm">
                 <thead>
                     <tr className="border-b border-gray-200 bg-gray-50/60">
                         {columns.map((col) => (
@@ -59,7 +59,7 @@ const AdminTable = ({ columns, data, actions, emptyMessage = 'No data available'
                                 ))}
                                 {actions && (
                                     <td className="px-3 py-2.5">
-                                        <div className="flex items-center gap-1.5 transition-opacity">
+                                        <div className="flex items-center gap-1.5 transition-opacity whitespace-nowrap">
                                             {actions.map((action, aIdx) => {
                                                 const label = typeof action.label === 'function' ? action.label(row) : action.label;
                                                 const variant = typeof action.variant === 'function' ? action.variant(row) : action.variant;

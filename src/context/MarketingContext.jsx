@@ -15,7 +15,7 @@ import { useWizard } from '../hooks/useWizard';
  *   - useWizard          → campaign draft state machine
  *
  * Projects are still delegated to useProjects() (Phase 2 change).
- * `useMarketing()` API is 100% unchanged — all consumers work without modification.
+ * `useMarketing()` remains backward-compatible; Brain Drive exposes `listBrainDrive` / `refetchProjects`.
  */
 const MarketingContext = createContext();
 
@@ -33,6 +33,8 @@ export const MarketingProvider = ({ children }) => {
         archiveProject,
         ingestProjectKnowledge,
         getProjectKnowledgeContext,
+        listBrainDrive,
+        refetch: refetchProjects,
     } = useProjects();
 
     // selectedProjectId stays local — threaded into campaign and social hooks
@@ -131,6 +133,8 @@ export const MarketingProvider = ({ children }) => {
         getProjectById,
         ingestProjectKnowledge,
         getProjectKnowledgeContext,
+        listBrainDrive,
+        refetchProjects,
 
         // Campaigns
         campaigns,
@@ -178,7 +182,7 @@ export const MarketingProvider = ({ children }) => {
         loadDraftForProject,
         resetDraftState,
     }), [
-        projects, projectsLoading, selectedProjectId,
+        projects, projectsLoading, selectedProjectId, listBrainDrive, refetchProjects,
         campaigns, campaignsLoading,
         socialPosts, socialPostsLoading,
         compareMode, compareConfig,

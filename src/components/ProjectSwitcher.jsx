@@ -1,10 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { ChevronsUpDown, Check, Plus, Folder } from 'lucide-react';
 import { useMarketing } from '../context/MarketingContext';
 
 const ProjectSwitcher = () => {
     const navigate = useNavigate();
+    const location = useLocation();
     const { projects, selectedProjectId, selectProject } = useMarketing();
     const [isOpen, setIsOpen] = useState(false);
     const dropdownRef = useRef(null);
@@ -24,12 +25,31 @@ const ProjectSwitcher = () => {
 
     const handleSelect = (project) => {
         selectProject(project.id);
-        navigate(`/marketing/projects/${project.id}`);
+        const brainDriveRoute = location.pathname.includes('/brain-drive');
+        if (!brainDriveRoute) {
+            navigate(`/marketing/projects/${project.id}`);
+        }
+        try {
+            if (brainDriveRoute) {
+                sessionStorage.setItem('brainDrive:selectedProjectId', project.id);
+            }
+        } catch (_) {
+            /* non-fatal */
+        }
         setIsOpen(false);
     };
 
     const handleAllProjects = () => {
         selectProject(null); // Clear selection to show All Projects Overview
+        try {
+            sessionStorage.removeItem('brainDrive:selectedProjectId');
+        } catch (_) {
+            /* non-fatal */
+        }
+        if (location.pathname.includes('/brain-drive')) {
+            setIsOpen(false);
+            return;
+        }
         navigate('/marketing');
         setIsOpen(false);
     };
