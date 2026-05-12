@@ -56,6 +56,31 @@ const TIMELINE_ICONS = {
 
 const AGENTS = ['AI Agent', 'Alex Rep', 'Sarah Closer', 'Mike Seller', 'John Doe', 'Jane Smith'];
 
+const VOICE_LANGUAGES = [
+    { code: 'auto', label: 'Auto-detect (match caller)', flag: '\u{1F310}' },
+    { code: 'hing', label: 'Hinglish (Hindi + English)', flag: '\u{1F1EE}\u{1F1F3}' },
+    { code: 'hi', label: 'Hindi', flag: '\u{1F1EE}\u{1F1F3}' },
+    { code: 'en', label: 'English', flag: '\u{1F1EC}\u{1F1E7}' },
+    { code: 'mr', label: 'Marathi', flag: '\u{1F1EE}\u{1F1F3}' },
+    { code: 'ta', label: 'Tamil', flag: '\u{1F1EE}\u{1F1F3}' },
+    { code: 'te', label: 'Telugu', flag: '\u{1F1EE}\u{1F1F3}' },
+    { code: 'kn', label: 'Kannada', flag: '\u{1F1EE}\u{1F1F3}' },
+    { code: 'ml', label: 'Malayalam', flag: '\u{1F1EE}\u{1F1F3}' },
+    { code: 'gu', label: 'Gujarati', flag: '\u{1F1EE}\u{1F1F3}' },
+    { code: 'bn', label: 'Bengali', flag: '\u{1F1EE}\u{1F1F3}' },
+    { code: 'pa', label: 'Punjabi', flag: '\u{1F1EE}\u{1F1F3}' },
+    { code: 'ur', label: 'Urdu', flag: '\u{1F1F5}\u{1F1F0}' },
+    { code: 'ar', label: 'Arabic', flag: '\u{1F1E6}\u{1F1EA}' },
+    { code: 'es', label: 'Spanish', flag: '\u{1F1EA}\u{1F1F8}' },
+    { code: 'fr', label: 'French', flag: '\u{1F1EB}\u{1F1F7}' },
+    { code: 'de', label: 'German', flag: '\u{1F1E9}\u{1F1EA}' },
+    { code: 'ja', label: 'Japanese', flag: '\u{1F1EF}\u{1F1F5}' },
+    { code: 'ko', label: 'Korean', flag: '\u{1F1F0}\u{1F1F7}' },
+    { code: 'zh', label: 'Chinese (Mandarin)', flag: '\u{1F1E8}\u{1F1F3}' },
+    { code: 'pt', label: 'Portuguese', flag: '\u{1F1E7}\u{1F1F7}' },
+    { code: 'ru', label: 'Russian', flag: '\u{1F1F7}\u{1F1FA}' },
+];
+
 /** Map post-call AI tier to CRM `stage` + `ai_score` (backend snake_case). */
 function mapVoiceTierToCrmPatch(tier, suggestedScore) {
     const t = String(tier || '').trim();
@@ -402,6 +427,7 @@ const SalesLeadWorkspace = () => {
     const [inboundSttMode, setInboundSttMode] = useState('browser');
     const [voiceProjectId, setVoiceProjectId] = useState('');
     const [voiceAgentName, setVoiceAgentName] = useState('SalesPal AI');
+    const [voiceLocale, setVoiceLocale] = useState('auto');
     const [browserVoices, setBrowserVoices] = useState([]);
     const [salesCallWindow, setSalesCallWindow] = useState({ start: '09:00', end: '21:00' });
 
@@ -482,6 +508,8 @@ const SalesLeadWorkspace = () => {
     const voiceSessionStartLockRef = useRef(false);
     /** User closed modal during connect — ignore late API response */
     const voiceCallDismissedRef = useRef(false);
+    /** True when Tata PSTN call is handling audio via server-side Voice Bot WebSocket streaming */
+    const pstnStreamingActiveRef = useRef(false);
     /** Stops duplicate onresult bursts from firing multiple /voice/session/turn requests */
     const lastVoiceDupRef = useRef({ text: '', at: 0 });
     /** Mic only after AI finishes speaking (opener or reply); blocks talking over the lead */
@@ -490,6 +518,7 @@ const SalesLeadWorkspace = () => {
     /** True while waiting on /voice/session/turn or TTS for that turn */
     const aiVoiceBusyRef = useRef(false);
     const setAllowVoiceMic = (v) => {
+        if (v && pstnStreamingActiveRef.current) return;
         voiceMicAllowedRef.current = v;
         setVoiceMicAllowed(v);
     };
@@ -723,6 +752,7 @@ const SalesLeadWorkspace = () => {
     };
 
     const startCallRecording = async () => {
+        if (pstnStreamingActiveRef.current) return;
         if (typeof window === 'undefined' || !navigator?.mediaDevices?.getUserMedia || typeof window.MediaRecorder === 'undefined') {
             return;
         }
@@ -830,6 +860,10 @@ const SalesLeadWorkspace = () => {
     };
 
     const speakText = (text, onEnd, engineOpts = {}) => {
+        if (pstnStreamingActiveRef.current) {
+            if (typeof onEnd === 'function') onEnd();
+            return;
+        }
         const forceBrowser = engineOpts.forceBrowser === true;
         if (callActiveRef.current) clearCallNoAnswerTimer();
         if (!text) {
@@ -976,6 +1010,7 @@ const SalesLeadWorkspace = () => {
         voiceSessionStartLockRef.current = false;
         lastVoiceDupRef.current = { text: '', at: 0 };
         aiVoiceBusyRef.current = false;
+        pstnStreamingActiveRef.current = false;
         setAllowVoiceMic(false);
         clearPendingListenRestart();
         clearCallNoAnswerTimer();
@@ -1744,14 +1779,6 @@ const SalesLeadWorkspace = () => {
             });
             return;
         }
-        if (!String(ttsVoiceUri || '').trim()) {
-            showToast({
-                title: 'Choose TTS voice',
-                description: 'Pick “System default” or a specific browser voice before starting the call.',
-                variant: 'warning',
-            });
-            return;
-        }
         voiceSessionStartLockRef.current = true;
         voiceCallDismissedRef.current = false;
         primeSpeechSynthesisFromUserGesture();
@@ -1778,11 +1805,12 @@ const SalesLeadWorkspace = () => {
             const waCommLocal = (lead.communications || []).find((c) => c.type === 'whatsapp');
             const history = (waCommLocal?.history || []).slice(-8);
             const openerContext = history.map((m) => `${m.sender}: ${m.text}`).join('\n');
+            const effectiveLocale = voiceLocale === 'auto' ? (lead.preferredLocale || 'hing') : voiceLocale;
             const response = await api.post('/ai/voice/session/start', {
                 leadId: lead.id,
                 phone: lead.phone,
                 name: lead.name,
-                locale: lead.preferredLocale || 'hing',
+                locale: effectiveLocale,
                 openerContext,
                 projectId: projectIdForCall,
                 agentName: agentTrim,
@@ -1836,54 +1864,74 @@ const SalesLeadWorkspace = () => {
             }
             setIncomingCallJob(null);
             setAllowVoiceMic(false);
+
+            const isPstnStreaming = Boolean(telephony?.enabled && telephony?.accepted && telephony?.voiceBotStreaming);
+            pstnStreamingActiveRef.current = isPstnStreaming;
+
             const opener = response?.assistant_reply ? String(response.assistant_reply).trim() : '';
-            if (opener) {
-                pushLiveTranscript('AI', opener, {
-                    sourceLabel: projectIdForCall ? 'Project Knowledge (selected)' : '',
-                });
-                speakText(opener, () => {
-                    if (callActiveRef.current && !voiceCallDismissedRef.current) {
-                        setAllowVoiceMic(true);
-                        scheduleCallNoAnswerTimer();
-                    }
-                });
+
+            if (isPstnStreaming) {
+                if (opener) {
+                    pushLiveTranscript('AI', opener, {
+                        sourceLabel: projectIdForCall ? 'Project Knowledge (selected)' : '',
+                    });
+                }
+                pushLiveTranscript('System', 'Tata PSTN call connected — the AI bot is handling the conversation on the phone with Brain Drive project knowledge. Browser mic/speaker are not needed.', {});
             } else {
-                setAllowVoiceMic(true);
-                scheduleCallNoAnswerTimer();
+                if (opener) {
+                    pushLiveTranscript('AI', opener, {
+                        sourceLabel: projectIdForCall ? 'Project Knowledge (selected)' : '',
+                    });
+                    speakText(opener, () => {
+                        if (callActiveRef.current && !voiceCallDismissedRef.current) {
+                            setAllowVoiceMic(true);
+                            scheduleCallNoAnswerTimer();
+                        }
+                    });
+                } else {
+                    setAllowVoiceMic(true);
+                    scheduleCallNoAnswerTimer();
+                }
             }
+
             addActionToLead(
                 lead.id,
                 'call',
-                'AI Voice Call Started',
+                isPstnStreaming ? 'AI Voice Call (PSTN Streaming)' : 'AI Voice Call Started',
                 response?.assistant_reply || 'AI call started for this lead.',
                 {
-                    outcome: 'Queued',
+                    outcome: isPstnStreaming ? 'PSTN Streaming' : 'Queued',
                     duration: '0m 00s',
                     telephony,
                     provider: telephony?.provider || null,
                     providerCallId: telephony?.providerCallId || null,
+                    voiceBotStreaming: isPstnStreaming,
                 }
             );
             if (telephony?.enabled && telephony?.accepted) {
                 showToast({
-                    title: 'Tata call initiated',
-                    description: telephony?.providerCallId
-                        ? `Provider call ID: ${telephony.providerCallId}`
-                        : 'Outbound call request accepted by Tata.',
+                    title: 'Call Connected Successfully',
+                    description: `The AI bot is now speaking with ${lead.name} on the phone about ${projects.find(p => p.id === projectIdForCall)?.name || 'the selected project'} using Brain Drive knowledge.`,
                     variant: 'success',
                 });
             } else if (!telephony?.enabled) {
                 showToast({
                     title: 'Telephony disabled',
-                    description: 'Running in local voice simulation mode. Enable Tata in backend .env for real calls.',
-                    variant: 'warning',
+                    description: 'Tata telephony is not enabled. Please enable TATA_CALL_ENABLED=true in backend .env.',
+                    variant: 'error',
                 });
+                callActiveRef.current = false;
+                setIsCallActive(false);
+                setModal(null);
             } else if (telephony?.enabled && !telephony?.accepted) {
                 showToast({
-                    title: 'Outbound call not accepted',
-                    description: String(telephony?.reason || telephony?.message || 'Provider rejected or did not accept the call. Browser voice still works.'),
-                    variant: 'warning',
+                    title: 'Call could not be placed',
+                    description: String(telephony?.reason || telephony?.message || 'Tata rejected the call request. Please check the phone number and try again.'),
+                    variant: 'error',
                 });
+                callActiveRef.current = false;
+                setIsCallActive(false);
+                setModal(null);
             }
         } catch (err) {
             if (!voiceCallDismissedRef.current) {
@@ -2197,7 +2245,7 @@ const SalesLeadWorkspace = () => {
     const agentNameReady = String(voiceAgentName || '').trim().length >= 2;
     const projectSelectedReady = Boolean(String(voiceProjectId || '').trim());
     const ttsChosenReady = Boolean(String(ttsVoiceUri || '').trim());
-    const voiceCallSetupComplete = projectSelectedReady && agentNameReady && ttsChosenReady;
+    const voiceCallSetupComplete = projectSelectedReady && agentNameReady;
 
     /* ── Score colour helpers ── */
     const scoreColor = (s) => s >= 80 ? 'text-red-600' : s >= 50 ? 'text-orange-500' : 'text-sky-500';
@@ -2332,11 +2380,8 @@ const SalesLeadWorkspace = () => {
                                             voiceCallDismissedRef.current = true;
                                             voiceSessionStartLockRef.current = false;
                                             setStartingLiveCall(false);
-                                            setModal(null);
-                                            return;
                                         }
-                                        if (isCallActive) endLiveAICall();
-                                        else setModal(null);
+                                        setModal(null);
                                     }}
                                     className="absolute top-3 right-3 z-30 text-white/50 hover:text-white bg-white/10 p-2 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70 sm:top-4 sm:right-4"
                                 >
@@ -2346,261 +2391,149 @@ const SalesLeadWorkspace = () => {
                                     <div className="px-4 pb-4 pt-14 sm:px-8 sm:pb-6 sm:pt-16">
                                         {!callAllowedNow && !isCallActive && (
                                             <div className="mb-3 rounded-lg bg-amber-500/20 border border-amber-400/40 text-amber-100 text-xs px-3 py-2 text-left leading-snug">
-                                                Calls are only active 9:00 AM – 9:00 PM in the lead&apos;s timezone.{' '}
+                                                Calls are only active 9:00 AM \u2013 9:00 PM in the lead&apos;s timezone.{' '}
                                                 {callWindowLabel(lead.timezone, salesCallWindow.start, salesCallWindow.end)}
                                             </div>
                                         )}
                                         <div className="flex flex-col items-center text-center">
-                                    <div className="w-24 h-24 rounded-full bg-white/10 flex items-center justify-center mb-5 relative">
-                                        <div className={`absolute inset-0 rounded-full border-4 ${startingLiveCall ? 'border-emerald-400/40 animate-ping' : isCallActive ? 'border-emerald-400/30' : 'border-white/20'}`} />
-                                        <Phone size={36} className="text-white relative z-10" />
-                                    </div>
-                                    <h3 className="text-2xl font-bold">{lead.name}</h3>
-                                    <p className="text-blue-200 text-sm mt-1 font-medium tracking-widest">{lead.phone}</p>
-                                    <p className="text-blue-200/70 text-[10px] mt-1 px-2 max-w-xs">{callWindowLabel(lead.timezone, salesCallWindow.start, salesCallWindow.end)}</p>
-                                    {!isCallActive && (
-                                        <div className="mt-4 w-full max-w-sm rounded-xl bg-white/10 border border-white/10 p-3 text-left">
-                                            <label className="block text-[10px] uppercase tracking-wide text-blue-100/80 mb-1.5">Project Brain</label>
-                                            <select
-                                                value={voiceProjectId}
-                                                onChange={(e) => setVoiceProjectId(e.target.value)}
-                                                className="w-full bg-blue-950/70 border border-white/20 rounded-md px-2.5 py-2 text-xs text-white outline-none focus:border-emerald-300"
-                                            >
-                                                <option value="">No project selected</option>
-                                                {projects.map((p) => (
-                                                    <option key={p.id} value={p.id}>
-                                                        {p.name}
-                                                    </option>
-                                                ))}
-                                            </select>
-                                            <label className="block text-[10px] uppercase tracking-wide text-blue-100/80 mb-1.5 mt-3">Agent preset</label>
-                                            <select
-                                                value={AGENTS.includes(voiceAgentName) ? voiceAgentName : ''}
-                                                onChange={(e) => {
-                                                    const v = e.target.value;
-                                                    if (v) setVoiceAgentName(v);
-                                                }}
-                                                className="w-full bg-blue-950/70 border border-white/20 rounded-md px-2.5 py-2 text-xs text-white outline-none focus:border-emerald-300 mb-2"
-                                            >
-                                                <option value="">Custom name below…</option>
-                                                {AGENTS.map((a) => (
-                                                    <option key={a} value={a}>
-                                                        {a}
-                                                    </option>
-                                                ))}
-                                            </select>
-                                            <label className="block text-[10px] uppercase tracking-wide text-blue-100/80 mb-1.5">Agent name (on call)</label>
-                                            <input
-                                                type="text"
-                                                value={voiceAgentName}
-                                                onChange={(e) => setVoiceAgentName(String(e.target.value || '').slice(0, 40))}
-                                                placeholder="SalesPal AI"
-                                                maxLength={40}
-                                                className="w-full bg-blue-950/70 border border-white/20 rounded-md px-2.5 py-2 text-xs text-white placeholder:text-blue-100/50 outline-none focus:border-emerald-300"
-                                            />
-                                            <label className="block text-[10px] uppercase tracking-wide text-blue-100/80 mb-1.5 mt-3">Browser voice (TTS)</label>
-                                            <select
-                                                value={ttsVoiceUri}
-                                                onChange={(e) => setTtsVoiceUri(e.target.value)}
-                                                className="w-full bg-blue-950/70 border border-white/20 rounded-md px-2.5 py-2 text-xs text-white outline-none focus:border-emerald-300"
-                                            >
-                                                <option value="">Select voice… (required)</option>
-                                                <option value="__default__">System default (browser chooses)</option>
-                                                {browserVoices.map((v) => (
-                                                    <option key={v.voiceURI} value={v.voiceURI}>
-                                                        {v.name} ({v.lang})
-                                                    </option>
-                                                ))}
-                                            </select>
-                                            <label className="mt-3 flex items-start gap-2.5 cursor-pointer text-left">
-                                                <input
-                                                    type="checkbox"
-                                                    checked={persistVoiceProjectToLead}
-                                                    onChange={(e) => setPersistVoiceProjectToLead(e.target.checked)}
-                                                    className="mt-0.5 rounded border-white/30 bg-blue-950/70 text-emerald-500 focus:ring-emerald-400"
-                                                />
-                                                <span className="text-[10px] text-blue-100/90 leading-snug">
-                                                    Save selected project to this lead before the call starts (updates CRM metadata: projectId + name).
-                                                </span>
-                                            </label>
-                                            <label className="mt-2 flex items-start gap-2.5 cursor-pointer text-left">
-                                                <input
-                                                    type="checkbox"
-                                                    checked={syncIntentFromVoiceCall}
-                                                    onChange={(e) => setSyncIntentFromVoiceCall(e.target.checked)}
-                                                    className="mt-0.5 rounded border-white/30 bg-blue-950/70 text-emerald-500 focus:ring-emerald-400"
-                                                />
-                                                <span className="text-[10px] text-blue-100/90 leading-snug">
-                                                    After the call, update lead stage &amp; AI score from the call summary (Hot / Warm / Cold). Turn off for tests or practice calls.
-                                                </span>
-                                            </label>
-                                            <p className="mt-2 text-[10px] text-blue-100/60">
-                                                CRM notes and current intent are always sent to the bot; project facts use the selection above.
-                                            </p>
-                                        </div>
-                                    )}
-                                    <div className="flex items-center gap-2 mt-6 bg-white/10 border border-white/10 px-4 py-2 rounded-full text-emerald-300 text-sm font-semibold max-w-[90%] flex-wrap justify-center">
-                                        <span
-                                            className={`w-2 h-2 rounded-full shrink-0 ${startingLiveCall ? 'bg-amber-400 animate-pulse' : isCallActive ? 'bg-emerald-400' : 'bg-slate-300'}`}
-                                        />
-                                        {startingLiveCall
-                                            ? 'Connecting…'
-                                            : isCallActive
-                                              ? isProcessingTurn
-                                                  ? 'Processing your speech…'
-                                                  : !voiceMicAllowed
-                                                    ? 'AI is speaking…'
-                                                    : isListening
-                                                      ? 'Listening — speak after the AI finishes'
-                                                      : 'Mic ready'
-                                              : incomingCallJob
-                                                ? 'Incoming — choose project / agent / voice, then tap the green button'
-                                                : 'Ready — configure project / agent / voice above, then tap the green button'}
-                                    </div>
-                                    {isCallActive ? (
-                                        <div className="mt-2 flex items-center gap-2">
-                                            <span
-                                                className={`text-[11px] px-2.5 py-1 rounded-full border ${
-                                                    aiControlMode === 'human'
-                                                        ? 'bg-amber-500/20 border-amber-300/50 text-amber-100'
-                                                        : 'bg-emerald-500/20 border-emerald-300/50 text-emerald-100'
-                                                }`}
-                                            >
-                                                {aiControlMode === 'human' ? 'Human active' : 'AI active'}
-                                            </span>
-                                            <button
-                                                type="button"
-                                                disabled={switchingControlMode}
-                                                onClick={() =>
-                                                    switchConversationControlMode(aiControlMode === 'human' ? 'ai' : 'human')
-                                                }
-                                                className="text-[11px] px-2.5 py-1 rounded-full border border-white/25 bg-white/10 hover:bg-white/20 text-white disabled:opacity-50"
-                                            >
-                                                {switchingControlMode
-                                                    ? 'Switching...'
-                                                    : aiControlMode === 'human'
-                                                        ? 'Resume AI'
-                                                        : 'Human takeover'}
-                                            </button>
-                                        </div>
-                                    ) : null}
-                                    {isCallActive ? (
-                                        <div className="mt-3 w-full max-w-md rounded-xl border border-white/20 bg-white/10 p-2.5 text-left">
-                                            <p className="text-[10px] uppercase tracking-wide text-blue-100/75 mb-2">
-                                                Compliance Event Timeline
-                                            </p>
-                                            {complianceEvents.length > 0 ? (
-                                                <div className="space-y-1.5 max-h-28 overflow-y-auto pr-1">
-                                                    {complianceEvents.slice(0, 10).map((ev) => {
-                                                        const info = describeComplianceEvent(ev);
-                                                        return (
-                                                            <div
-                                                                key={ev.id || `${ev.action_type}-${ev.created_at}`}
-                                                                className={`text-[11px] rounded px-2 py-1 border ${
-                                                                    info.tone === 'danger'
-                                                                        ? 'border-red-300/60 bg-red-500/20 text-red-50'
-                                                                        : info.tone === 'warn'
-                                                                            ? 'border-amber-300/60 bg-amber-500/20 text-amber-50'
-                                                                            : 'border-emerald-300/50 bg-emerald-500/15 text-emerald-50'
-                                                                }`}
-                                                            >
-                                                                <span className="font-semibold">{info.label}</span>
-                                                                <span className="ml-2 opacity-80">
-                                                                    {ev.created_at ? new Date(ev.created_at).toLocaleString() : ''}
-                                                                </span>
-                                                                {info.reason ? (
-                                                                    <div className="mt-0.5 opacity-85">{`Reason: ${info.reason}`}</div>
-                                                                ) : null}
+                                            <div className="w-24 h-24 rounded-full bg-white/10 flex items-center justify-center mb-5 relative">
+                                                <div className={`absolute inset-0 rounded-full border-4 ${startingLiveCall ? 'border-emerald-400/40 animate-ping' : isCallActive ? 'border-emerald-400/30' : 'border-white/20'}`} />
+                                                <Phone size={36} className="text-white relative z-10" />
+                                            </div>
+                                            <h3 className="text-2xl font-bold">{lead.name}</h3>
+                                            <p className="text-blue-200 text-sm mt-1 font-medium tracking-widest">{lead.phone}</p>
+                                            <p className="text-blue-200/70 text-[10px] mt-1 px-2 max-w-xs">{callWindowLabel(lead.timezone, salesCallWindow.start, salesCallWindow.end)}</p>
+
+                                            {isCallActive ? (
+                                                <div className="mt-6 w-full max-w-sm flex flex-col items-center gap-4">
+                                                    <div className="w-full rounded-xl bg-emerald-500/15 border border-emerald-400/30 p-4 text-left">
+                                                        <div className="flex items-center gap-2.5 mb-3">
+                                                            <div className="w-8 h-8 rounded-full bg-emerald-500/25 flex items-center justify-center shrink-0">
+                                                                <Phone size={16} className="text-emerald-300" />
                                                             </div>
-                                                        );
-                                                    })}
+                                                            <div>
+                                                                <p className="text-sm font-semibold text-emerald-100">Call Connected Successfully</p>
+                                                                <p className="text-[10px] text-emerald-200/70 mt-0.5">via Tata Smartflo Voice Bot</p>
+                                                            </div>
+                                                        </div>
+                                                        <div className="space-y-2 text-xs text-blue-100/90 leading-relaxed">
+                                                            <p>The AI bot is now speaking with <span className="font-semibold text-white">{lead.name}</span> on the phone.</p>
+                                                            <p>The bot is discussing <span className="font-semibold text-emerald-200">{projects.find(p => p.id === voiceProjectId)?.name || 'the selected project'}</span> using Brain Drive knowledge.</p>
+                                                            <p className="text-blue-100/60 text-[10px]">The entire conversation is handled server-side. No browser mic or speaker needed.</p>
+                                                        </div>
+                                                    </div>
+                                                    <div className="flex items-center gap-2 text-emerald-300 text-sm font-semibold">
+                                                        <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                                                        Call in progress
+                                                    </div>
                                                 </div>
                                             ) : (
-                                                <p className="text-[11px] text-blue-100/70">No compliance incidents detected yet.</p>
+                                                <div className="mt-4 w-full max-w-sm rounded-xl bg-white/10 border border-white/10 p-3 text-left">
+                                                    <label className="block text-[10px] uppercase tracking-wide text-blue-100/80 mb-1.5">Project Brain</label>
+                                                    <select
+                                                        value={voiceProjectId}
+                                                        onChange={(e) => setVoiceProjectId(e.target.value)}
+                                                        className="w-full bg-blue-950/70 border border-white/20 rounded-md px-2.5 py-2 text-xs text-white outline-none focus:border-emerald-300"
+                                                    >
+                                                        <option value="">No project selected</option>
+                                                        {projects.map((p) => (
+                                                            <option key={p.id} value={p.id}>
+                                                                {p.name}
+                                                            </option>
+                                                        ))}
+                                                    </select>
+                                                    <label className="block text-[10px] uppercase tracking-wide text-blue-100/80 mb-1.5 mt-3">Agent preset</label>
+                                                    <select
+                                                        value={AGENTS.includes(voiceAgentName) ? voiceAgentName : ''}
+                                                        onChange={(e) => {
+                                                            const v = e.target.value;
+                                                            if (v) setVoiceAgentName(v);
+                                                        }}
+                                                        className="w-full bg-blue-950/70 border border-white/20 rounded-md px-2.5 py-2 text-xs text-white outline-none focus:border-emerald-300 mb-2"
+                                                    >
+                                                        <option value="">Custom name below\u2026</option>
+                                                        {AGENTS.map((a) => (
+                                                            <option key={a} value={a}>
+                                                                {a}
+                                                            </option>
+                                                        ))}
+                                                    </select>
+                                                    <label className="block text-[10px] uppercase tracking-wide text-blue-100/80 mb-1.5">Agent name (on call)</label>
+                                                    <input
+                                                        type="text"
+                                                        value={voiceAgentName}
+                                                        onChange={(e) => setVoiceAgentName(String(e.target.value || '').slice(0, 40))}
+                                                        placeholder="SalesPal AI"
+                                                        maxLength={40}
+                                                        className="w-full bg-blue-950/70 border border-white/20 rounded-md px-2.5 py-2 text-xs text-white placeholder:text-blue-100/50 outline-none focus:border-emerald-300"
+                                                    />
+                                                    <label className="block text-[10px] uppercase tracking-wide text-blue-100/80 mb-1.5 mt-3">Call Language</label>
+                                                    <select
+                                                        value={voiceLocale}
+                                                        onChange={(e) => setVoiceLocale(e.target.value)}
+                                                        className="w-full bg-blue-950/70 border border-white/20 rounded-md px-2.5 py-2 text-xs text-white outline-none focus:border-emerald-300"
+                                                    >
+                                                        {VOICE_LANGUAGES.map((lang) => (
+                                                            <option key={lang.code} value={lang.code}>
+                                                                {lang.flag} {lang.label}
+                                                            </option>
+                                                        ))}
+                                                    </select>
+                                                    <p className="mt-1 text-[10px] text-blue-100/50">
+                                                        Initial language for the bot. During the call, the bot automatically switches to match the caller.
+                                                    </p>
+                                                    <label className="mt-3 flex items-start gap-2.5 cursor-pointer text-left">
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={persistVoiceProjectToLead}
+                                                            onChange={(e) => setPersistVoiceProjectToLead(e.target.checked)}
+                                                            className="mt-0.5 rounded border-white/30 bg-blue-950/70 text-emerald-500 focus:ring-emerald-400"
+                                                        />
+                                                        <span className="text-[10px] text-blue-100/90 leading-snug">
+                                                            Save selected project to this lead before the call starts (updates CRM metadata: projectId + name).
+                                                        </span>
+                                                    </label>
+                                                    <label className="mt-2 flex items-start gap-2.5 cursor-pointer text-left">
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={syncIntentFromVoiceCall}
+                                                            onChange={(e) => setSyncIntentFromVoiceCall(e.target.checked)}
+                                                            className="mt-0.5 rounded border-white/30 bg-blue-950/70 text-emerald-500 focus:ring-emerald-400"
+                                                        />
+                                                        <span className="text-[10px] text-blue-100/90 leading-snug">
+                                                            After the call, update lead stage &amp; AI score from the call summary (Hot / Warm / Cold). Turn off for tests or practice calls.
+                                                        </span>
+                                                    </label>
+                                                    <p className="mt-2 text-[10px] text-blue-100/60">
+                                                        CRM notes and current intent are always sent to the bot; project facts use Brain Drive knowledge.
+                                                    </p>
+                                                </div>
                                             )}
-                                        </div>
-                                    ) : null}
-                                    {isCallActive && inboundSttMode === 'sarvam' ? (
-                                        <p className="text-[10px] text-blue-100/75 mt-2 px-2 max-w-sm leading-snug">
-                                            Inbound transcription: Sarvam — speak clearly, then pause briefly at the end of your sentence.
-                                        </p>
-                                    ) : null}
-                                    {!isCallActive && incomingCallJob && (
-                                        <div className="mt-3 text-[11px] text-amber-100 bg-amber-500/20 border border-amber-300/40 rounded px-3 py-1.5">
-                                            Scheduled time reached: {new Date(incomingCallJob.schedule_at).toLocaleString()}.
-                                            {incomingCallSecondsLeft > 0 ? ` Answer in ${incomingCallSecondsLeft}s` : ''}
-                                        </div>
-                                    )}
-                                    {isCallActive && lastHeardText ? (
-                                        <div className="mt-3 text-xs text-blue-100/90">Heard: “{lastHeardText}”</div>
-                                    ) : null}
-                                    <div className="mt-4 w-full max-w-md min-h-[10rem] max-h-[min(42dvh,20rem)] sm:max-h-[min(46dvh,22rem)] bg-white/10 border border-white/10 rounded-xl p-2.5 sm:p-3 overflow-y-auto overscroll-y-contain text-left [scrollbar-width:thin]">
-                                        {liveCallTranscript.length > 0 ? liveCallTranscript.map((line, idx) => (
-                                            <div key={`${line.speaker}-${idx}-${line.text?.slice(0, 12)}`} className="text-xs mb-2 last:mb-0 leading-snug">
-                                                <span className="font-bold text-white/90">{line.speaker}:</span>{' '}
-                                                <span className="text-blue-50 break-words">{line.text}</span>
-                                                {line.speaker === 'AI' && line.sourceLabel ? (
-                                                    <span className="ml-2 inline-flex items-center rounded-full border border-emerald-300/50 bg-emerald-500/20 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-100">
-                                                        Fact source: {line.sourceLabel}
-                                                    </span>
-                                                ) : null}
-                                            </div>
-                                        )) : (
-                                            <p className="text-xs text-blue-100/80">Live call history appears here.</p>
-                                        )}
-                                    </div>
-                                    {isCallActive && (
-                                        <div className="mt-4 flex flex-wrap gap-2 justify-center w-full max-w-sm">
-                                            <button
-                                                type="button"
-                                                onClick={() => endLiveAICall({ reason: 'busy' })}
-                                                disabled={!voiceMicAllowed || isProcessingTurn}
-                                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold bg-white/15 border border-white/20 hover:bg-white/25 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                                                title="Lead is busy — Retry next slot"
-                                            >
-                                                <Coffee size={14} /> Busy
-                                            </button>
-                                            <button
-                                                type="button"
-                                                onClick={() => endLiveAICall({ reason: 'wrong_number' })}
-                                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold bg-white/15 border border-white/20 hover:bg-white/25 transition-colors"
-                                                title="Wrong number — stop call"
-                                            >
-                                                <PhoneOff size={14} /> Wrong number
-                                            </button>
-                                        </div>
-                                    )}
+
+                                            {!isCallActive && (
+                                                <div className="flex items-center gap-2 mt-6 bg-white/10 border border-white/10 px-4 py-2 rounded-full text-emerald-300 text-sm font-semibold max-w-[90%] flex-wrap justify-center">
+                                                    <span className={`w-2 h-2 rounded-full shrink-0 ${startingLiveCall ? 'bg-amber-400 animate-pulse' : 'bg-slate-300'}`} />
+                                                    {startingLiveCall
+                                                        ? 'Connecting to Tata\u2026'
+                                                        : incomingCallJob
+                                                            ? 'Incoming \u2014 choose project / agent, then tap the call button'
+                                                            : 'Ready \u2014 configure project / agent above, then press call'}
+                                                </div>
+                                            )}
+                                            {!isCallActive && incomingCallJob && (
+                                                <div className="mt-3 text-[11px] text-amber-100 bg-amber-500/20 border border-amber-300/40 rounded px-3 py-1.5">
+                                                    Scheduled time reached: {new Date(incomingCallJob.schedule_at).toLocaleString()}.
+                                                    {incomingCallSecondsLeft > 0 ? ` Answer in ${incomingCallSecondsLeft}s` : ''}
+                                                </div>
+                                            )}
                                         </div>
                                     </div>
                                 </div>
-                                <div className="shrink-0 border-t border-white/10 bg-blue-950/90 backdrop-blur-md px-4 sm:px-8 pt-4 pb-[max(0.75rem,env(safe-area-inset-bottom))] flex flex-col items-stretch gap-3">
-                                    <div className="flex justify-center gap-5 sm:gap-6">
+                                <div className="shrink-0 border-t border-white/10 bg-blue-950/90 backdrop-blur-md px-4 sm:px-8 pt-4 pb-[max(0.75rem,env(safe-area-inset-bottom))] flex flex-col items-center gap-3">
                                     <button
                                         type="button"
-                                        onClick={() => {
-                                            if (!isCallActive) return;
-                                            setIsMicMuted((prev) => {
-                                                const next = !prev;
-                                                micMutedRef.current = next;
-                                                if (next) {
-                                                    queueMicrotask(() => stopListening());
-                                                }
-                                                return next;
-                                            });
-                                        }}
-                                        disabled={!isCallActive}
-                                        className={`w-12 h-12 rounded-full flex items-center justify-center transition-colors ${!isCallActive ? 'opacity-40 cursor-not-allowed' : ''} ${isMicMuted ? 'bg-red-500/80 text-white' : 'bg-white/10 hover:bg-white/20 text-white/70 hover:text-white'}`}
-                                        title={isMicMuted ? 'Unmute microphone — AI will hear you again' : 'Mute microphone — AI will not pick up your voice'}
-                                    >
-                                        <Mic size={22} />
-                                    </button>
-                                    <button
-                                        type="button"
-                                        onClick={isCallActive ? () => endLiveAICall() : startLiveAICall}
-                                        disabled={
-                                            startingLiveCall ||
-                                            (!isCallActive && (!callAllowedNow || !voiceCallSetupComplete))
-                                        }
+                                        onClick={isCallActive ? () => { endLiveAICall(); setModal(null); } : startLiveAICall}
+                                        disabled={startingLiveCall || (!isCallActive && (!callAllowedNow || !voiceCallSetupComplete))}
                                         className={`w-16 h-16 rounded-full flex items-center justify-center shadow-lg transition-transform hover:scale-105 disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:scale-100 ${
                                             isCallActive
                                                 ? 'bg-red-500 hover:bg-red-600 shadow-red-500/30'
@@ -2612,48 +2545,15 @@ const SalesLeadWorkspace = () => {
                                                 : !callAllowedNow
                                                   ? callWindowLabel(lead.timezone, salesCallWindow.start, salesCallWindow.end)
                                                   : !voiceCallSetupComplete
-                                                    ? 'Select project, agent name, and TTS voice above first'
-                                                    : 'Start AI call (dials lead when Tata is enabled)'
+                                                    ? 'Select project and agent name first'
+                                                    : 'Place call via Tata (bot speaks on the phone)'
                                         }
                                     >
                                         <Phone size={26} className={isCallActive ? 'rotate-[135deg]' : ''} />
                                     </button>
-                                    <button
-                                        type="button"
-                                        onClick={() => {
-                                            if (!isCallActive) return;
-                                            setIsSpeakerMuted((prev) => {
-                                                const next = !prev;
-                                                isSpeakerMutedRef.current = next;
-                                                queueMicrotask(() => applySpeakerOutputMuteState(next, speechRef, sarvamAudioRef));
-                                                return next;
-                                            });
-                                        }}
-                                        disabled={!isCallActive}
-                                        className={`w-12 h-12 rounded-full flex items-center justify-center transition-colors ${!isCallActive ? 'opacity-40 cursor-not-allowed' : ''} ${isSpeakerMuted ? 'bg-red-500/80 text-white' : 'bg-white/10 hover:bg-white/20 text-white/70 hover:text-white'}`}
-                                        title={isSpeakerMuted ? 'Unmute speaker — hear the AI again' : 'Mute speaker — silence AI audio (call continues)'}
-                                    >
-                                        <Volume2 size={22} />
-                                    </button>
-                                    </div>
-                                    <div className="flex flex-col items-center justify-center pb-1 gap-1.5">
-                                    {!isCallActive && callAllowedNow && !voiceCallSetupComplete ? (
-                                        <p className="text-[10px] text-amber-200/95 text-center max-w-xs leading-snug px-1">
-                                            Pick a <span className="font-semibold">project</span>, confirm the{' '}
-                                            <span className="font-semibold">agent name</span>, choose{' '}
-                                            <span className="font-semibold">browser TTS</span>, then press the green
-                                            button — that is when the outbound line is placed (Tata dial).
-                                        </p>
-                                    ) : null}
-                                    <button
-                                        type="button"
-                                        onClick={endLiveAICall}
-                                        disabled={!isCallActive}
-                                        className="text-xs font-semibold px-4 py-2 rounded-full border border-white/20 text-white/80 hover:bg-white/10 disabled:opacity-40 disabled:cursor-not-allowed"
-                                    >
-                                        End Call
-                                    </button>
-                                    </div>
+                                    <p className="text-xs text-white/60 pb-1">
+                                        {isCallActive ? 'End Call' : 'Place Call'}
+                                    </p>
                                 </div>
                             </div>
                         )}
