@@ -21,6 +21,7 @@ import {
   Flame,
   RefreshCw,
   AlertTriangle,
+  Trash2,
 } from 'lucide-react';
 import api from '../../lib/api';
 import { useSubscription } from '../../commerce/SubscriptionContext';
@@ -62,6 +63,21 @@ const formatStatus = (s) => {
   if (v === 'completed') return { label: 'Completed', cls: 'bg-gray-200 text-gray-700 border-gray-200' };
   if (v === 'draft') return { label: 'Draft', cls: 'bg-blue-100 text-blue-700 border-blue-200' };
   return { label: v ? v.charAt(0).toUpperCase() + v.slice(1) : '—', cls: 'bg-gray-100 text-gray-700 border-gray-200' };
+};
+
+/** DB json/jsonb sometimes arrives as a JSON string — normalize for workspace UI. */
+const parseCampaignMetadata = (raw) => {
+  if (!raw) return {};
+  if (typeof raw === 'object' && !Array.isArray(raw)) return raw;
+  if (typeof raw === 'string') {
+    try {
+      const p = JSON.parse(raw);
+      return p && typeof p === 'object' && !Array.isArray(p) ? p : {};
+    } catch {
+      return {};
+    }
+  }
+  return {};
 };
 
 const buildScriptPrompt = ({ goal, audience, websiteUrl }) => {
@@ -111,7 +127,8 @@ const buildWhatsAppPrompt = ({ goal, offerDetails, websiteUrl }) => {
 };
 
 const SalesCampaignDetails = () => {
-  const { campaignId } = useParams();
+  const { campaignId: campaignIdParam } = useParams();
+  const campaignId = String(campaignIdParam || '').trim();
   const navigate = useNavigate();
   const location = useLocation();
   const { isModuleActive } = useSubscription();
@@ -159,6 +176,8 @@ const SalesCampaignDetails = () => {
   const [agentCustomName, setAgentCustomName] = useState('');
   const [outboundWindowStart, setOutboundWindowStart] = useState('09:00');
   const [outboundWindowEnd, setOutboundWindowEnd] = useState('21:00');
+  /** Seconds between sequential Tata dials for this campaign (stored in campaign metadata). */
+  const [outboundCallGapSeconds, setOutboundCallGapSeconds] = useState(120);
   const [logoEnabled, setLogoEnabled] = useState(false);
   const [logoUrl, setLogoUrl] = useState('');
   const [userMediaEnabled, setUserMediaEnabled] = useState(false);
@@ -174,6 +193,8 @@ const SalesCampaignDetails = () => {
   const [workspaceError, setWorkspaceError] = useState(null);
   const [leadFormError, setLeadFormError] = useState(null);
   const [updatingCampaignStatus, setUpdatingCampaignStatus] = useState(false);
+  const [queueingCalls, setQueueingCalls] = useState(false);
+  const [callQueueBanner, setCallQueueBanner] = useState(null);
 
   // Add Lead modal states
   const [addMethod, setAddMethod] = useState(null); // null | 'csv' | 'pdf' | 'manual'
@@ -181,6 +202,7 @@ const SalesCampaignDetails = () => {
   const [pdfFile, setPdfFile] = useState(null);
   const [uploadingFile, setUploadingFile] = useState(false);
   const [uploadSuccess, setUploadSuccess] = useState(null);
+  const [deletingLeadId, setDeletingLeadId] = useState(null);
 
   // Keep page clean: switch between Details and Leads views
   const [activeView, setActiveView] = useState('details'); // 'details' | 'leads'
@@ -236,7 +258,7 @@ const SalesCampaignDetails = () => {
 
   // Hydrate workspace state from campaign metadata once campaign loads
   useEffect(() => {
-    const md = campaign?.metadata || {};
+    const md = parseCampaignMetadata(campaign?.metadata);
     setWebsiteUrl(md.website_url || md.websiteUrl || '');
     setCallingEnabled(Boolean(md.calling_enabled));
     setCallingGoal(md.calling_goal || '');
@@ -259,6 +281,8 @@ const SalesCampaignDetails = () => {
     setAgentCustomName(md.agent_custom_name || '');
     setOutboundWindowStart(md.outbound_window_start || '09:00');
     setOutboundWindowEnd(md.outbound_window_end || '21:00');
+    const gap = parseInt(String(md.outbound_call_gap_seconds ?? '120'), 10);
+    setOutboundCallGapSeconds(Number.isFinite(gap) && gap >= 45 && gap <= 900 ? gap : 120);
     setLogoEnabled(Boolean(md.logo_enabled));
     setLogoUrl(md.logo_url || '');
     setUserMediaEnabled(Boolean(md.user_media_enabled));
@@ -282,6 +306,16 @@ const SalesCampaignDetails = () => {
     };
     loadSetupResources();
   }, []);
+
+  // Keep selected Tata number aligned with server options (exact TATA_CALL_FROM_NUMBER string from API).
+  useEffect(() => {
+    if (!businessNumbers.length || !businessNumber) return;
+    if (businessNumbers.includes(businessNumber)) return;
+    const digits = (s) => String(s || '').replace(/\D/g, '');
+    const dSel = digits(businessNumber);
+    const match = businessNumbers.find((n) => digits(n) === dSel);
+    if (match) setBusinessNumber(match);
+  }, [businessNumbers, businessNumber]);
 
   const openLeadsView = () => setActiveView('leads');
   const openDetailsView = () => setActiveView('details');
@@ -337,13 +371,14 @@ const SalesCampaignDetails = () => {
       status: l.status || 'New',
       lastActivity: l.last_activity || l.lastActivity || l.created_at || l.createdAt || '—',
       _linkToLead: l.deal_id ? `/sales/leads/${l.deal_id}` : null,
+      isCampaignLeadRow: true,
     }));
 
     // De-dupe by phone+name if possible (avoid double showing)
     const key = (x) => `${String(x.phone || '').trim()}::${String(x.name || '').trim()}`.toLowerCase();
     const seen = new Set();
     const merged = [];
-    for (const item of [...syncedLeads, ...fromBackend]) {
+    for (const item of [...fromBackend, ...syncedLeads]) {
       const k = key(item);
       if (k === '::') {
         merged.push(item);
@@ -369,17 +404,41 @@ const SalesCampaignDetails = () => {
     if (l._linkToLead) navigate(l._linkToLead);
   };
 
+  const removeCampaignLeadRow = async (leadRowId, e) => {
+    e?.stopPropagation?.();
+    if (!leadRowId || !campaignId) return;
+    if (
+      !window.confirm(
+        'Remove this lead from this campaign? This only removes the campaign entry; it does not delete a linked CRM deal.'
+      )
+    ) {
+      return;
+    }
+    setDeletingLeadId(leadRowId);
+    setWorkspaceError(null);
+    try {
+      await api.delete(`/sales/campaigns/${campaignId}/leads/${leadRowId}`);
+      await fetchLeads();
+    } catch (err) {
+      setWorkspaceError(err?.message || 'Failed to remove lead');
+    } finally {
+      setDeletingLeadId(null);
+    }
+  };
+
   const saveLead = async (e) => {
     e.preventDefault();
     if (!leadForm.name.trim() || !leadForm.phone.trim()) return;
     setSavingLead(true);
     setLeadFormError(null);
     try {
-      await api.post(`/sales/campaigns/${campaignId}/leads`, {
+      const payload = {
         name: leadForm.name.trim(),
         phone: leadForm.phone.trim(),
-        email: leadForm.email?.trim() || null,
-      });
+      };
+      const em = leadForm.email?.trim();
+      if (em) payload.email = em;
+      await api.post(`/sales/campaigns/${campaignId}/leads`, payload);
       setLeadForm({ name: '', phone: '', email: '' });
       await fetchLeads();
       setActiveView('leads');
@@ -399,20 +458,25 @@ const SalesCampaignDetails = () => {
   const handleCsvUpload = async (file) => {
     if (!file) return;
     setUploadingFile(true);
+    setUploadSuccess(null);
     try {
       const formData = new FormData();
       formData.append('file', file);
       formData.append('campaignId', campaignId);
       const result = await api.post('/sales/leads/upload/csv', formData, {
-        headers: { 'Content-Type': 'multipart/form-data' }
+        headers: { 'Content-Type': 'multipart/form-data' },
       });
+      const count = Number(result?.count ?? 0);
       setCsvFile(null);
-      
-      // Refresh leads and switch to leads view
+      if (count < 1) {
+        setUploadSuccess(
+          'Error: No leads were imported from this CSV. Check that rows include a phone number or email in recognizable columns.'
+        );
+        return;
+      }
       await fetchLeads();
       setActiveView('leads');
-      
-      setUploadSuccess(`${result?.count || 1} lead(s) uploaded successfully`);
+      setUploadSuccess(`${count} lead(s) uploaded successfully`);
       setTimeout(() => {
         setAddOpen(false);
         setAddMethod(null);
@@ -428,34 +492,52 @@ const SalesCampaignDetails = () => {
   const handlePdfUpload = async (file) => {
     if (!file) return;
     setUploadingFile(true);
+    setUploadSuccess(null);
     try {
       const formData = new FormData();
       formData.append('file', file);
       formData.append('campaignId', campaignId);
       const result = await api.post('/sales/leads/upload/pdf', formData, {
-        headers: { 'Content-Type': 'multipart/form-data' }
+        headers: { 'Content-Type': 'multipart/form-data' },
       });
+      const count = Number(result?.count ?? 0);
+      if (count < 1) {
+        setUploadSuccess(
+          'Error: No leads were saved from this PDF. Use a text-based PDF with visible phone numbers or emails, or add leads manually.'
+        );
+        return;
+      }
       setPdfFile(null);
-      
-      // Refresh leads and switch to leads view
       await fetchLeads();
       setActiveView('leads');
-      
-      setUploadSuccess(`${result?.count || 1} lead(s) extracted successfully`);
+      setUploadSuccess(`${count} lead(s) extracted successfully`);
       setTimeout(() => {
         setAddOpen(false);
         setAddMethod(null);
         setUploadSuccess(null);
       }, 2000);
     } catch (error) {
-      setUploadSuccess(`Error uploading PDF: ${error?.message || 'Unknown error'}`);
+      const issues = Array.isArray(error?.details?.issues) ? error.details.issues : [];
+      const missing = Array.isArray(error?.details?.missing) ? error.details.missing : [];
+      const parts = [];
+      if (error?.message) parts.push(error.message);
+      if (issues.length) parts.push(issues.map((x) => `• ${x}`).join('\n'));
+      if (missing.length) parts.push(`What we need in the document:\n• ${missing.join('\n• ')}`);
+      const tc = error?.details?.textCharactersExtracted;
+      const pc = error?.details?.pageCount;
+      const meta = [tc != null ? `${tc} characters of text extracted` : null, pc != null ? `${pc} page(s)` : null]
+        .filter(Boolean)
+        .join(' · ');
+      if (meta) parts.push(meta);
+      const body = parts.filter(Boolean).join('\n\n') || 'Upload failed';
+      setUploadSuccess(`Error:\n${body}`);
     } finally {
       setUploadingFile(false);
     }
   };
 
   const isManualCampaign = useMemo(() => {
-    const md = campaign?.metadata || {};
+    const md = parseCampaignMetadata(campaign?.metadata);
     const createdFrom = md.created_from || md.createdFrom;
     return String(createdFrom || '').toLowerCase() === 'sales' || String(campaign?.platform || '').toLowerCase() === 'manual';
   }, [campaign?.id, campaign?.platform, campaign?.metadata]);
@@ -477,7 +559,8 @@ const SalesCampaignDetails = () => {
     }
   };
 
-  const saveCommSetup = async () => {
+  const saveCommSetup = async (opts = {}) => {
+    const { rethrow = false } = opts;
     setSavingComm(true);
     setWorkspaceError(null);
     try {
@@ -508,6 +591,7 @@ const SalesCampaignDetails = () => {
         agentCustomName,
         outboundWindowStart,
         outboundWindowEnd,
+        outboundCallGapSeconds,
         logoEnabled,
         logoUrl,
         userMediaEnabled,
@@ -516,17 +600,146 @@ const SalesCampaignDetails = () => {
       if (updated?.id) setCampaign(updated);
     } catch (e) {
       setWorkspaceError(e?.message || 'Failed to save setup');
+      if (rethrow) throw e;
     } finally {
       setSavingComm(false);
+    }
+  };
+
+  const queueOutboundCalls = async (opts = {}) => {
+    const { silent = false } = opts;
+    if (!campaignId) return null;
+    setQueueingCalls(true);
+    if (!silent) {
+      setCallQueueBanner(null);
+      setWorkspaceError(null);
+    }
+    try {
+      const q = await api.post(`/sales/campaigns/${campaignId}/enqueue-call-queue`, {
+        gapSeconds: outboundCallGapSeconds,
+        replacePending: true,
+      });
+      const parts = [
+        `Queued ${q.queued ?? 0} AI outbound call(s).`,
+        (q.skippedNoPhone || 0) > 0 ? `${q.skippedNoPhone} row(s) had no phone.` : null,
+        (q.skippedInvalid || 0) > 0 ? `${q.skippedInvalid} invalid number(s).` : null,
+      ].filter(Boolean);
+      if (!silent) setCallQueueBanner(parts.join(' '));
+      return q;
+    } catch (e) {
+      if (!silent) {
+        setWorkspaceError(e?.message || 'Failed to queue outbound calls');
+      }
+      throw e;
+    } finally {
+      setQueueingCalls(false);
     }
   };
 
   const setCampaignStatus = async (status) => {
     setUpdatingCampaignStatus(true);
     setWorkspaceError(null);
+    setCallQueueBanner(null);
     try {
       const updated = await api.put(`/marketing/campaigns/${campaignId}`, { status });
-      if (updated?.id) setCampaign(updated);
+      let applied = updated?.campaign ?? updated?.data ?? updated;
+
+      if (!applied?.id) {
+        try {
+          applied = await api.get(`/marketing/campaigns/${campaignId}`);
+        } catch (_) {
+          applied = null;
+        }
+      }
+
+      if (!applied?.id) {
+        setWorkspaceError('Could not update or load this campaign. Check that you are logged in and the Marketing module is enabled, then try again.');
+        return;
+      }
+
+      setCampaign(applied);
+
+      const nowPaused = String(status).toLowerCase() === 'paused';
+      if (nowPaused) {
+        try {
+          await api.post(`/sales/campaigns/${campaignId}/cancel-call-queue`, {});
+        } catch {
+          /* non-fatal if nothing to cancel */
+        }
+        setCallQueueBanner(null);
+      }
+
+      const nowActive = String(status).toLowerCase() === 'active';
+      if (!nowActive) {
+        return;
+      }
+
+      // Enqueue reads saved campaign metadata — persist UI calling setup first if user configured it but did not click Save.
+      let mdApplied = parseCampaignMetadata(applied.metadata);
+      const localCallingReady =
+        callingEnabled && String(callingScript || '').trim().length > 0;
+      const serverCallingReady =
+        Boolean(mdApplied.calling_enabled) && String(mdApplied.calling_script || '').trim().length > 0;
+
+      if (localCallingReady && !serverCallingReady) {
+        try {
+          await saveCommSetup({ rethrow: true });
+          const refreshed = await api.get(`/marketing/campaigns/${campaignId}`);
+          if (refreshed?.id) {
+            applied = refreshed;
+            setCampaign(refreshed);
+            mdApplied = parseCampaignMetadata(refreshed.metadata);
+          }
+        } catch {
+          return;
+        }
+      }
+
+      const callReady =
+        (Boolean(mdApplied.calling_enabled) || callingEnabled) &&
+        (String(mdApplied.calling_script || '').trim() || String(callingScript || '').trim()).length > 0;
+
+      if (!callReady) {
+        setWorkspaceError(
+          'Turn on AI calling under “Calling Setup”, add or generate a calling script, then click Save setup. After that, press Start campaign again to queue outbound calls to each lead’s phone number.'
+        );
+        return;
+      }
+
+      // Always attempt to queue when starting — not only draft→active (paused/active→active must dial too).
+      try {
+        const q = await queueOutboundCalls({ silent: true });
+        setCallQueueBanner(
+          `Queued ${q?.queued ?? 0} AI outbound call(s), ~${outboundCallGapSeconds}s apart. ${
+            (q?.skippedNoPhone || 0) > 0 ? `${q.skippedNoPhone} row(s) had no phone. ` : ''
+          }The server places each Tata call when the job is due.`
+        );
+        if ((q?.queued ?? 0) === 0) {
+          const total = Number(q?.totalCampaignLeads ?? 0);
+          if (total === 0) {
+            setWorkspaceError(
+              'No calls were queued — add campaign leads with phone numbers, then click “Queue outbound calls”.'
+            );
+          } else if ((q?.skippedNoPhone || 0) > 0 || (q?.skippedInvalid || 0) > 0) {
+            setWorkspaceError(
+              'No calls were queued: some leads are missing or have invalid phone numbers. Fix numbers and try “Queue outbound calls” again.'
+            );
+          } else if ((q?.skippedDup || 0) > 0) {
+            setWorkspaceError(
+              'No new calls were queued (pending jobs already exist for these leads). Wait for the dialer or pause to cancel pending calls.'
+            );
+          } else {
+            setWorkspaceError(
+              'No calls were queued. Check Tata telephony env (TATA_CALL_ENABLED, keys, TATA_CALL_FROM_NUMBER) and try “Queue outbound calls”.'
+            );
+          }
+        }
+      } catch (qe) {
+        setWorkspaceError(
+          qe?.message ||
+            'Could not queue outbound calls. Save calling setup, verify Tata telephony configuration, then use “Queue outbound calls”.'
+        );
+      }
     } catch (e) {
       setWorkspaceError(e?.message || 'Failed to update campaign status');
     } finally {
@@ -859,7 +1072,11 @@ Confirm next action: demo/site visit/callback and send WhatsApp summary.`;
                 // CSV Upload
                 <div className="p-5 space-y-4">
                   {uploadSuccess ? (
-                    <div className={`p-4 rounded-lg text-sm font-medium ${uploadSuccess.includes('Error') ? 'bg-red-50 text-red-700' : 'bg-emerald-50 text-emerald-700'}`}>
+                    <div
+                      className={`p-4 rounded-lg text-sm font-medium whitespace-pre-line ${
+                        uploadSuccess.includes('Error') ? 'bg-red-50 text-red-700 border border-red-100' : 'bg-emerald-50 text-emerald-700'
+                      }`}
+                    >
                       {uploadSuccess}
                     </div>
                   ) : (
@@ -885,6 +1102,7 @@ Confirm next action: demo/site visit/callback and send WhatsApp summary.`;
                           Back
                         </button>
                         <button
+                          type="button"
                           onClick={() => handleCsvUpload(csvFile)}
                           disabled={!csvFile || uploadingFile}
                           className="flex-1 px-4 py-2 text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors disabled:opacity-60 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2"
@@ -900,7 +1118,11 @@ Confirm next action: demo/site visit/callback and send WhatsApp summary.`;
                 // PDF Upload
                 <div className="p-5 space-y-4">
                   {uploadSuccess ? (
-                    <div className={`p-4 rounded-lg text-sm font-medium ${uploadSuccess.includes('Error') ? 'bg-red-50 text-red-700' : 'bg-emerald-50 text-emerald-700'}`}>
+                    <div
+                      className={`p-4 rounded-lg text-sm font-medium whitespace-pre-line ${
+                        uploadSuccess.includes('Error') ? 'bg-red-50 text-red-700 border border-red-100' : 'bg-emerald-50 text-emerald-700'
+                      }`}
+                    >
                       {uploadSuccess}
                     </div>
                   ) : (
@@ -926,6 +1148,7 @@ Confirm next action: demo/site visit/callback and send WhatsApp summary.`;
                           Back
                         </button>
                         <button
+                          type="button"
                           onClick={() => handlePdfUpload(pdfFile)}
                           disabled={!pdfFile || uploadingFile}
                           className="flex-1 px-4 py-2 text-sm font-semibold text-white bg-green-600 hover:bg-green-700 rounded-lg transition-colors disabled:opacity-60 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2"
@@ -1045,6 +1268,11 @@ Confirm next action: demo/site visit/callback and send WhatsApp summary.`;
           {workspaceError && (
             <div className="mb-4 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-4 py-3" role="alert">
               {workspaceError}
+            </div>
+          )}
+          {callQueueBanner && (
+            <div className="mb-4 text-sm text-emerald-900 bg-emerald-50 border border-emerald-200 rounded-lg px-4 py-3" role="status">
+              {callQueueBanner}
             </div>
           )}
           {activeView === 'details' ? (
@@ -1402,7 +1630,23 @@ Confirm next action: demo/site visit/callback and send WhatsApp summary.`;
                         <label className="text-xs font-bold text-gray-500 uppercase tracking-wide block mb-1.5">Outbound window end</label>
                         <input type="time" value={outboundWindowEnd} onChange={(e) => setOutboundWindowEnd(e.target.value)} className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm" />
                       </div>
-                      <div className="md:col-span-2">
+                      <div>
+                        <label className="text-xs font-bold text-gray-500 uppercase tracking-wide block mb-1.5">Seconds between calls</label>
+                        <input
+                          type="number"
+                          min={45}
+                          max={900}
+                          step={15}
+                          value={outboundCallGapSeconds}
+                          onChange={(e) => {
+                            const v = parseInt(e.target.value, 10);
+                            if (Number.isFinite(v)) setOutboundCallGapSeconds(Math.min(900, Math.max(45, v)));
+                          }}
+                          className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm"
+                        />
+                        <p className="text-[10px] text-gray-400 mt-1">Pacing for sequential Tata dials (45–900).</p>
+                      </div>
+                      <div>
                         <label className="text-xs font-bold text-gray-500 uppercase tracking-wide block mb-1.5">WhatsApp report number</label>
                         <input value={whatsappReportNumber} onChange={(e) => setWhatsappReportNumber(e.target.value)} placeholder="+91..." className="w-full px-3 py-2.5 border border-gray-200 rounded-lg text-sm" />
                       </div>
@@ -1548,20 +1792,41 @@ Confirm next action: demo/site visit/callback and send WhatsApp summary.`;
                       )}
                     </div>
 
+                    {/* Status / queue feedback next to controls (page-top alerts are easy to miss when scrolled) */}
+                    {(workspaceError || callQueueBanner) && (
+                      <div className="mt-4 space-y-2">
+                        {workspaceError && (
+                          <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2.5 whitespace-pre-line" role="alert">
+                            {workspaceError}
+                          </div>
+                        )}
+                        {callQueueBanner && (
+                          <div className="text-sm text-emerald-900 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2.5 whitespace-pre-line" role="status">
+                            {callQueueBanner}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
                     {/* Action Buttons */}
                     <div className="flex items-center gap-2 mt-4 flex-wrap">
                       <button
                         type="button"
                         onClick={() => setCampaignStatus('active')}
-                        disabled={updatingCampaignStatus}
+                        disabled={updatingCampaignStatus || queueingCalls || savingComm}
                         className="inline-flex items-center gap-2 px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-lg transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
                       >
-                        <Play size={14} /> Start Campaign
+                        {updatingCampaignStatus || queueingCalls || savingComm ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Play size={14} />
+                        )}{' '}
+                        Start Campaign
                       </button>
                       <button
                         type="button"
                         onClick={() => setCampaignStatus('paused')}
-                        disabled={updatingCampaignStatus}
+                        disabled={updatingCampaignStatus || queueingCalls || savingComm}
                         className="inline-flex items-center gap-2 px-3.5 py-2 bg-gray-900 hover:bg-gray-800 text-white text-sm font-semibold rounded-lg transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
                       >
                         <Pause size={14} /> Pause Campaign
@@ -1569,12 +1834,32 @@ Confirm next action: demo/site visit/callback and send WhatsApp summary.`;
                       <button
                         type="button"
                         onClick={() => setCampaignStatus('active')}
-                        disabled={updatingCampaignStatus}
+                        disabled={updatingCampaignStatus || queueingCalls || savingComm}
                         className="inline-flex items-center gap-2 px-3.5 py-2 bg-gray-100 hover:bg-gray-200 text-gray-800 text-sm font-semibold rounded-lg border border-gray-200 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
                       >
                         <RotateCcw size={14} /> Resume Campaign
                       </button>
+                      <button
+                        type="button"
+                        onClick={() => queueOutboundCalls()}
+                        disabled={
+                          queueingCalls ||
+                          !callingEnabled ||
+                          !hasCallingScript ||
+                          manualLeads.length === 0
+                        }
+                        className="inline-flex items-center gap-2 px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold rounded-lg transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                        title="Staggered Tata dial queue: one customer at a time (~2 min apart)"
+                      >
+                        {queueingCalls ? <Loader2 className="w-4 h-4 animate-spin" /> : <Phone size={14} />}
+                        Queue outbound calls
+                      </button>
                     </div>
+                    <p className="text-xs text-gray-500 mt-2 max-w-3xl leading-relaxed">
+                      Upload leads, save calling setup, then start from <span className="font-semibold text-gray-700">draft</span> to auto-build the dial queue,
+                      or press <span className="font-semibold text-gray-700">Queue outbound calls</span> when the campaign is active. The server places each call when the job is due (sequential auto-dial).
+                      <span className="block mt-1 text-gray-500">Pausing the campaign cancels pending queued calls for this campaign.</span>
+                    </p>
                   </div>
 
                   {/* Performance Metrics - Below Communication Section */}
@@ -1713,12 +1998,13 @@ Confirm next action: demo/site visit/callback and send WhatsApp summary.`;
                         <th className="py-3 px-5 font-semibold min-w-[130px]">AI Score</th>
                         <th className="py-3 px-5 font-semibold min-w-[140px]">Status</th>
                         <th className="py-3 px-5 font-semibold min-w-[200px]">Last Interaction</th>
+                        <th className="py-3 px-5 font-semibold w-[100px] text-right">Actions</th>
                       </tr>
                     </thead>
                     <tbody className="text-sm divide-y divide-gray-50">
                       {filteredLeads.map((l) => (
                         <tr
-                          key={`${l.id}-${l.phone}-${l.name}`}
+                          key={l.isCampaignLeadRow ? `c-${l.id}` : `m-${l.id}`}
                           onClick={() => onLeadClick(l)}
                           className={`transition-colors ${l._linkToLead ? 'hover:bg-blue-50/40 cursor-pointer group' : 'hover:bg-gray-50'}`}
                         >
@@ -1754,12 +2040,31 @@ Confirm next action: demo/site visit/callback and send WhatsApp summary.`;
                             </button>
                           </td>
                           <td className="py-3.5 px-5 text-xs text-gray-500">{formatDate(l.lastActivity)}</td>
+                          <td className="py-3.5 px-5 text-right">
+                            {l.isCampaignLeadRow ? (
+                              <button
+                                type="button"
+                                title="Remove from this campaign"
+                                disabled={deletingLeadId === l.id}
+                                onClick={(e) => removeCampaignLeadRow(l.id, e)}
+                                className="inline-flex items-center justify-center p-2 rounded-lg text-red-600 hover:bg-red-50 border border-transparent hover:border-red-100 transition-colors disabled:opacity-50"
+                              >
+                                {deletingLeadId === l.id ? (
+                                  <Loader2 className="w-4 h-4 animate-spin" />
+                                ) : (
+                                  <Trash2 className="w-4 h-4" />
+                                )}
+                              </button>
+                            ) : (
+                              <span className="text-xs text-gray-300">—</span>
+                            )}
+                          </td>
                         </tr>
                       ))}
 
                       {filteredLeads.length === 0 && (
                         <tr>
-                          <td colSpan={6} className="py-14 text-center text-gray-400">
+                          <td colSpan={7} className="py-14 text-center text-gray-400">
                             <div className="flex flex-col items-center gap-2">
                               <Users size={34} className="text-gray-200" />
                               <p className="text-sm font-medium">No leads yet — add leads or connect marketing campaigns</p>

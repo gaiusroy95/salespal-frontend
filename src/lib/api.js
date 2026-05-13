@@ -78,7 +78,15 @@ async function request(method, path, body = null, options = {}) {
 
   const url = `${getApiUrl()}${path}`;
   const isFormData = body instanceof FormData;
-  const headers = isFormData ? {} : { "Content-Type": "application/json" };
+  const extraHeaders = (options && options.headers && typeof options.headers === "object") ? options.headers : {};
+  const headers = isFormData
+    ? { ...extraHeaders }
+    : { "Content-Type": "application/json", ...extraHeaders };
+
+  // Multipart must set boundary automatically; a caller-provided Content-Type breaks uploads.
+  if (isFormData && headers["Content-Type"]) {
+    delete headers["Content-Type"];
+  }
 
   const token = getAccessToken();
   if (token) headers["Authorization"] = `Bearer ${token}`;
@@ -100,9 +108,9 @@ async function request(method, path, body = null, options = {}) {
 
     try {
       const newToken = await refreshPromise;
-      headers["Authorization"] = `Bearer ${newToken}`;
+      const retryHeaders = { ...config.headers, Authorization: `Bearer ${newToken}` };
       // Retry once — use a new variable to avoid reassigning const
-      const retryRes = await fetch(url, { ...config, headers });
+      const retryRes = await fetch(url, { ...config, headers: retryHeaders });
       if (!retryRes.ok && retryRes.status === 401) {
         clearTokens();
         window.location.href = "/";
@@ -169,11 +177,11 @@ async function request(method, path, body = null, options = {}) {
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 const api = {
-  get: (path) => request("GET", path),
-  post: (path, body) => request("POST", path, body),
-  put: (path, body) => request("PUT", path, body),
-  patch: (path, body) => request("PATCH", path, body),
-  delete: (path) => request("DELETE", path),
+  get: (path, options) => request("GET", path, null, options || {}),
+  post: (path, body, options) => request("POST", path, body, options || {}),
+  put: (path, body, options) => request("PUT", path, body, options || {}),
+  patch: (path, body, options) => request("PATCH", path, body, options || {}),
+  delete: (path, options) => request("DELETE", path, null, options || {}),
 };
 
 export default api;
