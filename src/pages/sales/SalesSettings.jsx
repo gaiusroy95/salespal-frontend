@@ -101,6 +101,7 @@ const DEFAULT_SALES_SETTINGS = {
     fuMaxPerLead: '7',
     stopAfterConv: true,
     pauseOnMeeting: true,
+    automationMirrorCustomerLanguage: true,
     aiLang: 'English',
     aiTone: 'Professional',
     aiGreeting: 'Hi {name}, this is an AI assistant calling on behalf of {company}. I understand you were interested in {project}. Is this a good time to talk?',
@@ -202,6 +203,7 @@ const SalesSettings = () => {
     }));
 
     /* ── AI Behavior ── */
+    const [automationMirrorCustomerLanguage, setAutomationMirrorCustomerLanguage] = useState(true);
     const [aiLang, setAiLang] = useState('English');
     const [aiGreeting, setAiGreeting] = useState('Hi {name}, this is an AI assistant calling on behalf of {company}. I understand you were interested in {project}. Is this a good time to talk?');
     const [aiTone, setAiTone] = useState('Professional');
@@ -237,6 +239,7 @@ const SalesSettings = () => {
         setFuMaxPerLead(String(next.fuMaxPerLead || DEFAULT_SALES_SETTINGS.fuMaxPerLead));
         setStopAfterConv(Boolean(next.stopAfterConv));
         setPauseOnMeeting(Boolean(next.pauseOnMeeting));
+        setAutomationMirrorCustomerLanguage(next.automationMirrorCustomerLanguage !== false);
         setAiLang(String(next.aiLang || DEFAULT_SALES_SETTINGS.aiLang));
         setAiGreeting(String(next.aiGreeting || DEFAULT_SALES_SETTINGS.aiGreeting));
         setAiTone(String(next.aiTone || DEFAULT_SALES_SETTINGS.aiTone));
@@ -288,6 +291,7 @@ const SalesSettings = () => {
                 fuMaxPerLead,
                 stopAfterConv,
                 pauseOnMeeting,
+                automationMirrorCustomerLanguage,
                 aiLang,
                 aiGreeting,
                 aiTone,
@@ -576,10 +580,17 @@ const SalesSettings = () => {
                 {/* ── 7. AI Behavior & Scripts ── */}
                 <AccordionSection icon={BrainCircuit} title="AI Behavior & Scripts" expanded={openSection === 'behavior'} onToggle={() => toggle('behavior')}>
                     <div className="space-y-5">
+                        <SettingRow
+                            label="Automation: match customer language"
+                            desc="Scheduled bot calls and auto WhatsApp follow-ups follow the lead’s profile language first, then mirror what the customer actually says (calls use auto-detect listening). Turn off to lock automation to the fixed language below."
+                        >
+                            <Toggle checked={automationMirrorCustomerLanguage} onChange={() => setAutomationMirrorCustomerLanguage((v) => !v)} />
+                        </SettingRow>
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                             <div className="p-4 rounded-xl border border-gray-100 bg-white">
-                                <FieldLabel>Default Language</FieldLabel>
-                                <StyledSelect value={aiLang} onChange={e => setAiLang(e.target.value)} className="w-full">
+                                <FieldLabel>Fixed automation language</FieldLabel>
+                                <p className="text-xs text-gray-500 mb-2">Used only when “match customer language” is off.</p>
+                                <StyledSelect value={aiLang} onChange={e => setAiLang(e.target.value)} className="w-full" disabled={automationMirrorCustomerLanguage}>
                                     {['English', 'Hindi', 'Gujarati', 'Marathi', 'Tamil', 'Telugu'].map(l => <option key={l}>{l}</option>)}
                                 </StyledSelect>
                             </div>

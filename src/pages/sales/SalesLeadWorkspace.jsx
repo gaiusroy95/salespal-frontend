@@ -1805,12 +1805,16 @@ const SalesLeadWorkspace = () => {
             const waCommLocal = (lead.communications || []).find((c) => c.type === 'whatsapp');
             const history = (waCommLocal?.history || []).slice(-8);
             const openerContext = history.map((m) => `${m.sender}: ${m.text}`).join('\n');
-            const effectiveLocale = voiceLocale === 'auto' ? (lead.preferredLocale || 'hing') : voiceLocale;
+            const mirrorSpokenLanguage = voiceLocale === 'auto';
+            const openerLocale = String(lead.preferredLocale || 'hing').toLowerCase();
+            const localeForSession = mirrorSpokenLanguage ? 'hing' : voiceLocale;
             const response = await api.post('/ai/voice/session/start', {
                 leadId: lead.id,
                 phone: lead.phone,
                 name: lead.name,
-                locale: effectiveLocale,
+                locale: localeForSession,
+                mirrorSpokenLanguage,
+                openerLocale,
                 openerContext,
                 projectId: projectIdForCall,
                 agentName: agentTrim,
@@ -2480,7 +2484,7 @@ const SalesLeadWorkspace = () => {
                                                         ))}
                                                     </select>
                                                     <p className="mt-1 text-[10px] text-blue-100/50">
-                                                        Initial language for the bot. During the call, the bot automatically switches to match the caller.
+                                                        Auto: opener uses the lead&apos;s profile language; listening uses auto-detect, then replies match what you say. Fixed languages pin STT/TTS. Sales → Settings → AI Behavior controls scheduled automation the same way.
                                                     </p>
                                                     <label className="mt-3 flex items-start gap-2.5 cursor-pointer text-left">
                                                         <input
